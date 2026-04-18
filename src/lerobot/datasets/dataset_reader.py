@@ -16,6 +16,7 @@
 """Private reader component for LeRobotDataset. Handles random-access reading (HF dataset, delta indices, video decoding)."""
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import datasets
@@ -49,6 +50,7 @@ class DatasetReader:
         video_backend: str,
         delta_timestamps: dict[str, list[float]] | None,
         image_transforms: Callable | None,
+        return_uint8: bool = False,
     ):
         """Initialize the reader with metadata, filtering, and transform config.
 
@@ -73,6 +75,7 @@ class DatasetReader:
         self._tolerance_s = tolerance_s
         self._video_backend = video_backend
         self._image_transforms = image_transforms
+        self._return_uint8 = return_uint8
 
         self.hf_dataset: datasets.Dataset | None = None
         self._absolute_to_relative_idx: dict[int, int] | None = None
@@ -233,16 +236,30 @@ class DatasetReader:
         Segmentation Fault.
         """
         ep = self._meta.episodes[ep_idx]
-        item = {}
-        for vid_key, query_ts in query_timestamps.items():
+
+        def _decode_single(vid_key: str, query_ts: list[float]) -> tuple[str, torch.Tensor]:
             from_timestamp = ep[f"videos/{vid_key}/from_timestamp"]
             shifted_query_ts = [from_timestamp + ts for ts in query_ts]
-
             video_path = self.root / self._meta.get_video_file_path(ep_idx, vid_key)
-            frames = decode_video_frames(video_path, shifted_query_ts, self._tolerance_s, self._video_backend)
-            item[vid_key] = frames.squeeze(0)
+            frames = decode_video_frames(
+                video_path,
+                shifted_query_ts,
+                self._tolerance_s,
+                self._video_backend,
+                return_uint8=self._return_uint8,
+            )
+            return vid_key, frames.squeeze(0)
 
-        return item
+        items = list(query_timestamps.items())
+
+        # Single camera: no threading overhead
+        if len(items) <= 1:
+            return {vid_key: _decode_single(vid_key, query_ts)[1] for vid_key, query_ts in items}
+
+        # Multi-camera: decode in parallel (video decoding releases the GIL)
+        with ThreadPoolExecutor(max_workers=len(items)) as pool:
+            futures = [pool.submit(_decode_single, k, ts) for k, ts in items]
+            return dict(f.result() for f in futures)
 
     def get_item(self, idx) -> dict:
         """Core __getitem__ logic. Assumes hf_dataset is loaded.
