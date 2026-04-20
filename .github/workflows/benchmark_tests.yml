@@ -118,7 +118,7 @@ jobs:
             bash -c "
               hf auth login --token \"\$HF_USER_TOKEN\" --add-to-git-credential 2>/dev/null || true
               lerobot-eval \
-                --policy.path=pepijn223/smolvla_libero \
+                --policy.path=lerobot/smolvla_libero \
                 --env.type=libero \
                 --env.task=libero_spatial \
                 --eval.batch_size=1 \
@@ -147,7 +147,7 @@ jobs:
             --artifacts-dir /tmp/libero-artifacts \
             --env libero \
             --task libero_spatial \
-            --policy pepijn223/smolvla_libero
+            --policy lerobot/smolvla_libero
 
       - name: Upload Libero rollout video
         if: always()
@@ -270,7 +270,7 @@ jobs:
             bash -c "
               hf auth login --token \"\$HF_USER_TOKEN\" --add-to-git-credential 2>/dev/null || true
               lerobot-eval \
-                --policy.path=pepijn223/smolvla_metaworld \
+                --policy.path=lerobot/smolvla_metaworld \
                 --env.type=metaworld \
                 --env.task=metaworld-push-v3 \
                 --eval.batch_size=1 \
@@ -299,7 +299,7 @@ jobs:
             --artifacts-dir /tmp/metaworld-artifacts \
             --env metaworld \
             --task metaworld-push-v3 \
-            --policy pepijn223/smolvla_metaworld
+            --policy lerobot/smolvla_metaworld
 
       - name: Upload MetaWorld rollout video
         if: always()
@@ -315,6 +315,115 @@ jobs:
         with:
           name: metaworld-metrics
           path: /tmp/metaworld-artifacts/metrics.json
+          if-no-files-found: warn
+
+  # ── ROBOTWIN 2.0 ──────────────────────────────────────────────────────────
+  # Isolated image: full RoboTwin 2.0 stack — SAPIEN, mplib, CuRobo,
+  # pytorch3d, + simulation assets (~4 GB).
+  # Build takes ~20 min on first run; subsequent runs hit the layer cache.
+  # Requires an NVIDIA GPU runner with CUDA 12.1 drivers.
+  robotwin-integration-test:
+    name: RoboTwin 2.0 — build image + 1-episode eval
+    runs-on:
+      group: aws-g6-4xlarge-plus
+    env:
+      HF_USER_TOKEN: ${{ secrets.LEROBOT_HF_USER }}
+      ROBOTWIN_POLICY: lerobot/smolvla_robotwin
+      ROBOTWIN_TASKS: beat_block_hammer,click_bell,handover_block,stack_blocks_two,click_alarmclock,open_microwave,adjust_bottle,lift_pot,stamp_seal,turn_switch
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          lfs: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3 # zizmor: ignore[unpinned-uses]
+        with:
+          cache-binary: false
+
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v3 # zizmor: ignore[unpinned-uses]
+        with:
+          username: ${{ secrets.DOCKERHUB_LEROBOT_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_LEROBOT_PASSWORD }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_LEROBOT_USERNAME }}
+
+      # Build the full-install image: SAPIEN, mplib, CuRobo, pytorch3d +
+      # simulation assets (~4 GB). Layer cache lives in the runner's local
+      # Docker daemon — reused across re-runs on the same machine.
+      - name: Build RoboTwin 2.0 benchmark image
+        uses: docker/build-push-action@v6 # zizmor: ignore[unpinned-uses]
+        with:
+          context: .
+          file: docker/Dockerfile.benchmark.robotwin
+          push: false
+          load: true
+          tags: lerobot-benchmark-robotwin:ci
+          cache-from: type=local,src=/tmp/.buildx-cache-robotwin
+          cache-to: type=local,dest=/tmp/.buildx-cache-robotwin,mode=max
+
+      - name: Run RoboTwin 2.0 smoke eval (10 tasks, 1 episode each)
+        if: env.HF_USER_TOKEN != ''
+        run: |
+          # Named container (no --rm) so we can docker cp artifacts out.
+          docker run --name robotwin-eval --gpus all \
+            --shm-size=4g \
+            -e HF_HOME=/tmp/hf \
+            -e HF_USER_TOKEN="${HF_USER_TOKEN}" \
+            -e ROBOTWIN_POLICY="${ROBOTWIN_POLICY}" \
+            -e ROBOTWIN_TASKS="${ROBOTWIN_TASKS}" \
+            lerobot-benchmark-robotwin:ci \
+            bash -c "
+              hf auth login --token \"\$HF_USER_TOKEN\" --add-to-git-credential 2>/dev/null || true
+              cd /opt/robotwin && lerobot-eval \
+                --policy.path=\"\$ROBOTWIN_POLICY\" \
+                --env.type=robotwin \
+                --env.task=\"\$ROBOTWIN_TASKS\" \
+                --eval.batch_size=1 \
+                --eval.n_episodes=1 \
+                --eval.use_async_envs=false \
+                --policy.device=cuda \
+                '--rename_map={\"observation.images.head_camera\": \"observation.images.camera1\", \"observation.images.left_camera\": \"observation.images.camera2\", \"observation.images.right_camera\": \"observation.images.camera3\"}' \
+                --output_dir=/tmp/eval-artifacts
+              python /lerobot/scripts/ci/extract_task_descriptions.py \
+                --env robotwin \
+                --task \"\$ROBOTWIN_TASKS\" \
+                --output /tmp/eval-artifacts/task_descriptions.json
+            "
+
+      - name: Copy RoboTwin artifacts from container
+        if: always()
+        run: |
+          mkdir -p /tmp/robotwin-artifacts
+          docker cp robotwin-eval:/tmp/eval-artifacts/. /tmp/robotwin-artifacts/ 2>/dev/null || true
+          docker rm -f robotwin-eval || true
+
+      - name: Parse RoboTwin eval metrics
+        if: always()
+        run: |
+          python3 scripts/ci/parse_eval_metrics.py \
+            --artifacts-dir /tmp/robotwin-artifacts \
+            --env robotwin \
+            --task "${ROBOTWIN_TASKS}" \
+            --policy "${ROBOTWIN_POLICY}"
+
+      - name: Upload RoboTwin rollout video
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: robotwin-rollout-video
+          path: /tmp/robotwin-artifacts/videos/
+          if-no-files-found: warn
+
+      - name: Upload RoboTwin eval metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: robotwin-metrics
+          path: /tmp/robotwin-artifacts/metrics.json
           if-no-files-found: warn
 
   # ── ROBOCASA365 ──────────────────────────────────────────────────────────

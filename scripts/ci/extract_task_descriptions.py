@@ -57,6 +57,24 @@ def _metaworld_descriptions(task_name: str) -> dict[str, str]:
     return {f"{task_name}_0": label}
 
 
+def _robotwin_descriptions(task_names: str) -> dict[str, str]:
+    """Return descriptions for each requested RoboTwin task. Reads
+    `description/task_instruction/<task>.json` from the RoboTwin clone
+    (cwd is /opt/robotwin in CI). Falls back to the task name if missing."""
+    out: dict[str, str] = {}
+    root = Path("description/task_instruction")
+    for name in (t.strip() for t in task_names.split(",") if t.strip()):
+        desc_file = root / f"{name}.json"
+        desc = name.replace("_", " ")
+        if desc_file.is_file():
+            data = json.loads(desc_file.read_text())
+            full = data.get("full_description") or desc
+            # Strip the schema placeholders ({A}, {a}) — keep the sentence readable.
+            desc = full.replace("<", "").replace(">", "")
+        out[f"{name}_0"] = desc
+    return out
+
+
 def _robocasa_descriptions(task_spec: str) -> dict[str, str]:
     """For each task in the comma-separated list, emit a cleaned-name label.
 
@@ -87,6 +105,8 @@ def main() -> int:
             descriptions = _libero_descriptions(args.task)
         elif args.env == "metaworld":
             descriptions = _metaworld_descriptions(args.task)
+        elif args.env == "robotwin":
+            descriptions = _robotwin_descriptions(args.task)
         elif args.env == "robocasa":
             descriptions = _robocasa_descriptions(args.task)
         else:
