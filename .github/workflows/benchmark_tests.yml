@@ -736,3 +736,110 @@ jobs:
           name: robomme-metrics
           path: /tmp/robomme-artifacts/metrics.json
           if-no-files-found: warn
+
+  # ── LIBERO-plus ───────────────────────────────────────────────────────────
+  # Isolated image: LIBERO-plus fork cloned into /home/user_lerobot on top of
+  # huggingface/lerobot-gpu (see docker/Dockerfile.benchmark.libero_plus).
+  libero-plus-integration-test:
+    name: LIBERO-plus — build image + 1-episode eval
+    runs-on:
+      group: aws-g6-4xlarge-plus
+    env:
+      HF_USER_TOKEN: ${{ secrets.LEROBOT_HF_USER }}
+      LIBERO_PLUS_SUITE: libero_spatial
+      LIBERO_PLUS_POLICY: lerobot/smolvla_libero_plus
+      LIBERO_PLUS_TASK_IDS: "[0,100,260,500,1000,1500,2000,2400]"
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          lfs: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3 # zizmor: ignore[unpinned-uses]
+        with:
+          cache-binary: false
+
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v3 # zizmor: ignore[unpinned-uses]
+        with:
+          username: ${{ secrets.DOCKERHUB_LEROBOT_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_LEROBOT_PASSWORD }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_LEROBOT_USERNAME }}
+
+      - name: Build LIBERO-plus benchmark image
+        uses: docker/build-push-action@v6 # zizmor: ignore[unpinned-uses]
+        with:
+          context: .
+          file: docker/Dockerfile.benchmark.libero_plus
+          push: false
+          load: true
+          tags: lerobot-benchmark-libero-plus:ci
+          cache-from: type=local,src=/tmp/.buildx-cache-libero-plus
+          cache-to: type=local,dest=/tmp/.buildx-cache-libero-plus,mode=max
+
+      - name: Run LIBERO-plus smoke eval (1 episode)
+        if: env.HF_USER_TOKEN != ''
+        run: |
+          docker run --name libero-plus-eval --gpus all \
+            --shm-size=4g \
+            -e HF_HOME=/tmp/hf \
+            -e HF_USER_TOKEN="${HF_USER_TOKEN}" \
+            -e HF_HUB_DOWNLOAD_TIMEOUT=300 \
+            -e LIBERO_PLUS_SUITE="${LIBERO_PLUS_SUITE}" \
+            -e LIBERO_PLUS_POLICY="${LIBERO_PLUS_POLICY}" \
+            -e LIBERO_PLUS_TASK_IDS="${LIBERO_PLUS_TASK_IDS}" \
+            lerobot-benchmark-libero-plus:ci \
+            bash -c "
+              hf auth login --token \"\$HF_USER_TOKEN\" --add-to-git-credential 2>/dev/null || true
+              lerobot-eval \
+                --policy.path=\"\$LIBERO_PLUS_POLICY\" \
+                --env.type=libero_plus \
+                --env.task=\"\$LIBERO_PLUS_SUITE\" \
+                --env.task_ids=\"\$LIBERO_PLUS_TASK_IDS\" \
+                --eval.batch_size=1 \
+                --eval.n_episodes=1 \
+                --eval.use_async_envs=false \
+                --policy.device=cuda \
+                '--env.camera_name_mapping={\"agentview_image\": \"camera1\", \"robot0_eye_in_hand_image\": \"camera2\"}' \
+                --policy.empty_cameras=1 \
+                --output_dir=/tmp/eval-artifacts
+              python scripts/ci/extract_task_descriptions.py \
+                --env libero_plus --task \"\$LIBERO_PLUS_SUITE\" \
+                --output /tmp/eval-artifacts/task_descriptions.json
+            "
+
+      - name: Copy LIBERO-plus artifacts from container
+        if: always()
+        run: |
+          mkdir -p /tmp/libero-plus-artifacts
+          docker cp libero-plus-eval:/tmp/eval-artifacts/. /tmp/libero-plus-artifacts/ 2>/dev/null || true
+          docker rm -f libero-plus-eval || true
+
+      - name: Parse LIBERO-plus eval metrics
+        if: always()
+        run: |
+          python3 scripts/ci/parse_eval_metrics.py \
+            --artifacts-dir /tmp/libero-plus-artifacts \
+            --env libero_plus \
+            --task "${LIBERO_PLUS_SUITE}" \
+            --policy "${LIBERO_PLUS_POLICY}"
+
+      - name: Upload LIBERO-plus rollout video
+        if: always()
+        uses: actions/upload-artifact@v4 # zizmor: ignore[unpinned-uses]
+        with:
+          name: libero-plus-rollout-video
+          path: /tmp/libero-plus-artifacts/videos/
+          if-no-files-found: warn
+
+      - name: Upload LIBERO-plus eval metrics
+        if: always()
+        uses: actions/upload-artifact@v4 # zizmor: ignore[unpinned-uses]
+        with:
+          name: libero-plus-metrics
+          path: /tmp/libero-plus-artifacts/metrics.json
+          if-no-files-found: warn

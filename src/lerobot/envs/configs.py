@@ -331,6 +331,7 @@ class LiberoEnv(EnvConfig):
     camera_name_mapping: dict[str, str] | None = None
     observation_height: int = 360
     observation_width: int = 360
+    is_libero_plus: bool = False
     features: dict[str, PolicyFeature] = field(
         default_factory=lambda: {
             ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(7,)),
@@ -432,6 +433,7 @@ class LiberoEnv(EnvConfig):
             control_mode=self.control_mode,
             episode_length=self.episode_length,
             camera_name_mapping=self.camera_name_mapping,
+            is_libero_plus=self.is_libero_plus,
         )
 
     def get_env_processors(self):
@@ -649,6 +651,30 @@ class IsaaclabArenaEnv(HubEnvConfig):
             ),
             PolicyProcessorPipeline(steps=[]),
         )
+
+
+@EnvConfig.register_subclass("libero_plus")
+@dataclass
+class LiberoPlusEnv(LiberoEnv):
+    """Config for LIBERO-plus robustness benchmark evaluation.
+
+    LIBERO-plus extends LIBERO with 7 perturbation dimensions (camera viewpoints,
+    object layouts, robot initial states, language instructions, lighting, background
+    textures, sensor noise) producing ~10k task variants.
+
+    The gym interface is identical to LIBERO so this class reuses ``LiberoEnv``
+    entirely — only the registered name and default task suite differ.
+
+    Install: see docker/Dockerfile.benchmark.libero_plus — LIBERO-plus ships
+    as a namespace package from a git fork and must be cloned + PYTHONPATH'd
+    rather than installed as a pyproject extra.
+
+    See Also:
+        https://github.com/sylvestf/LIBERO-plus
+    """
+
+    task: str = "libero_spatial"
+    is_libero_plus: bool = True
 
 
 @EnvConfig.register_subclass("robotwin")
