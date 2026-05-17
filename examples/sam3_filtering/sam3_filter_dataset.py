@@ -95,6 +95,32 @@ def normalized_xyxy_to_mask(box: list[float], height: int, width: int) -> np.nda
     return mask
 
 
+def box_cfg_to_normalized_xyxy(box_cfg: dict[str, Any], height: int, width: int) -> list[float]:
+    fmt = box_cfg.get("format", "normalized_xyxy")
+    val = [float(v) for v in box_cfg["value"]]
+    if fmt == "normalized_xyxy":
+        return val
+    if fmt == "normalized_cxcywh":
+        cx, cy, bw, bh = val
+        return [cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0]
+    if fmt == "pixel_xyxy":
+        x0, y0, x1, y1 = val
+        return [x0 / width, y0 / height, x1 / width, y1 / height]
+    if fmt == "pixel_xywh":
+        x, y, bw, bh = val
+        return [x / width, y / height, (x + bw) / width, (y + bh) / height]
+    raise ValueError(f"Unsupported box format: {fmt}")
+
+
+def regions_to_mask(regions: list[dict[str, Any]] | None, height: int, width: int) -> np.ndarray | None:
+    if not regions:
+        return None
+    mask = np.zeros((height, width), dtype=bool)
+    for region in regions:
+        mask |= normalized_xyxy_to_mask(box_cfg_to_normalized_xyxy(region, height, width), height, width)
+    return mask
+
+
 def box_to_normalized_cxcywh(box_cfg: dict[str, Any], height: int, width: int) -> list[float]:
     fmt = box_cfg.get("format", "normalized_xyxy")
     val = [float(v) for v in box_cfg["value"]]
@@ -164,7 +190,16 @@ def draw_config_boxes(image: np.ndarray, roles: list[dict[str, Any]]) -> np.ndar
     colors = ["red", "yellow", "cyan", "magenta", "orange", "lime"]
     ci = 0
     for role in roles:
+        all_regions = []
         for box in role.get("boxes", []) or []:
+            b = dict(box)
+            b["_kind"] = "prompt_box"
+            all_regions.append(b)
+        for box in role.get("search_regions", []) or []:
+            b = dict(box)
+            b["_kind"] = "search_region"
+            all_regions.append(b)
+        for box in all_regions:
             fmt = box.get("format", "normalized_xyxy")
             val = [float(v) for v in box["value"]]
             if fmt == "normalized_xyxy":
@@ -181,8 +216,12 @@ def draw_config_boxes(image: np.ndarray, roles: list[dict[str, Any]]) -> np.ndar
                 continue
             color = colors[ci % len(colors)]
             ci += 1
-            draw.rectangle([x0, y0, x1, y1], outline=color, width=3)
-            draw.text((x0 + 4, y0 + 4), role.get("name", "role"), fill=color)
+            width_px = 3 if box.get("_kind") == "prompt_box" else 2
+            label = role.get("name", "role")
+            if box.get("_kind") == "search_region":
+                label = f"{label}:search"
+            draw.rectangle([x0, y0, x1, y1], outline=color, width=width_px)
+            draw.text((x0 + 4, y0 + 4), label, fill=color)
     return np.asarray(pil)
 
 
@@ -195,6 +234,7 @@ class MockSegmenter:
         h, w = image.shape[:2]
         mask = np.zeros((h, w), dtype=bool)
         boxes = role.get("boxes", []) or []
+        search_mask = regions_to_mask(role.get("search_regions"), h, w)
         for box in boxes:
             if not bool(box.get("label", True)):
                 continue
@@ -204,7 +244,9 @@ class MockSegmenter:
             else:
                 cx, cy, bw, bh = box_to_normalized_cxcywh(box, h, w)
                 mask |= normalized_xyxy_to_mask([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], h, w)
-        if not boxes and self.mock_text_mask == "center":
+        if search_mask is not None and not boxes:
+            mask |= search_mask
+        if not boxes and search_mask is None and self.mock_text_mask == "center":
             # Fake a text-only object mask so output plumbing can be inspected locally.
             mask |= normalized_xyxy_to_mask([0.35, 0.35, 0.65, 0.65], h, w)
         elapsed = (time.perf_counter() - start) * 1000
@@ -241,7 +283,14 @@ class SAM3ImageSegmenter:
         self.processor = Sam3Processor(self.model, confidence_threshold=confidence_threshold)
         self.confidence_threshold = confidence_threshold
 
-    def _extract_masks(self, state: dict[str, Any], image_shape: tuple[int, int], max_instances: int) -> tuple[np.ndarray, list[float], list[list[float]]]:
+    def _extract_masks(
+        self,
+        state: dict[str, Any],
+        image_shape: tuple[int, int],
+        max_instances: int,
+        search_mask: np.ndarray | None = None,
+        restrict_to_search_region: bool = False,
+    ) -> tuple[np.ndarray, list[float], list[list[float]]]:
         h, w = image_shape
         union = np.zeros((h, w), dtype=bool)
         scores_out: list[float] = []
@@ -269,6 +318,11 @@ class SAM3ImageSegmenter:
             mask_np = np.squeeze(mask_np).astype(bool)
             if mask_np.shape != (h, w):
                 mask_np = np.asarray(Image.fromarray(mask_np.astype(np.uint8) * 255).resize((w, h), Image.Resampling.NEAREST)) > 0
+            if search_mask is not None:
+                if not np.logical_and(mask_np, search_mask).any():
+                    continue
+                if restrict_to_search_region:
+                    mask_np = np.logical_and(mask_np, search_mask)
             union |= mask_np
             scores_out.append(score)
             if boxes is not None:
@@ -285,6 +339,8 @@ class SAM3ImageSegmenter:
         prompts = role.get("prompts", []) or [None]
         boxes = role.get("boxes", []) or []
         max_instances = int(role.get("max_instances", role.get("max_instances_per_role", 3)))
+        search_mask = regions_to_mask(role.get("search_regions"), h, w)
+        restrict_to_search_region = bool(role.get("restrict_to_search_region", False))
         role_mask = np.zeros((h, w), dtype=bool)
         role_scores: list[float] = []
         role_boxes: list[list[float]] = []
@@ -307,7 +363,13 @@ class SAM3ImageSegmenter:
                         )
                     except TypeError:
                         state = self.processor.add_geometric_prompt(state=state, box=box, label=label)
-                mask, scores, out_boxes = self._extract_masks(state, (h, w), max_instances=max_instances)
+                mask, scores, out_boxes = self._extract_masks(
+                    state,
+                    (h, w),
+                    max_instances=max_instances,
+                    search_mask=search_mask,
+                    restrict_to_search_region=restrict_to_search_region,
+                )
                 role_mask |= mask
                 role_scores.extend(scores)
                 role_boxes.extend(out_boxes)
@@ -367,6 +429,7 @@ def process_camera(
                 "prompts": result.prompts,
                 "scores": result.scores,
                 "boxes_xyxy": result.boxes_xyxy,
+                "search_regions": role.get("search_regions", []),
                 "elapsed_ms": round(result.elapsed_ms, 3),
                 "missing": result.missing,
                 "optional": bool(role.get("optional", False)),
