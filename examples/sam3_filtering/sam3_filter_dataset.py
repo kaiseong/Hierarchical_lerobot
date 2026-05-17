@@ -47,6 +47,18 @@ def parse_episodes(value: str | None) -> list[int] | None:
     return [int(x.strip()) for x in value.split(",") if x.strip()]
 
 
+def parse_optional_frame_limit(value: str | None) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"all", "none", "unlimited", "-1", "0"}:
+        return None
+    parsed = int(text)
+    if parsed < 0:
+        return None
+    return parsed
+
+
 def scalar_to_int(value: Any) -> int:
     if hasattr(value, "item"):
         return int(value.item())
@@ -563,8 +575,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--root", default=None, help="Override config.dataset.root for local LeRobot dataset")
     parser.add_argument("--episodes", default=None, help="Comma-separated episode indices, e.g. 0,1,2")
     parser.add_argument("--output-dir", default="examples/sam3_filtering/outputs/run", help="Directory for filtered/overlay outputs")
-    parser.add_argument("--max-frames-per-episode", type=int, default=10, help="Limit frames processed per episode")
-    parser.add_argument("--max-total-frames", type=int, default=None, help="Global frame limit")
+    parser.add_argument(
+        "--max-frames-per-episode",
+        type=parse_optional_frame_limit,
+        default=20,
+        help="Limit frames processed per episode. Use 'all' or 0 for full episodes. Default 20 is for quick prompt/BBOX smoke tests.",
+    )
+    parser.add_argument(
+        "--max-total-frames",
+        type=parse_optional_frame_limit,
+        default=None,
+        help="Global frame limit. Use 'all' or 0 for no global limit.",
+    )
     parser.add_argument("--frame-stride", type=int, default=15, help="Process every Nth frame within each selected episode")
     parser.add_argument("--no-download-videos", action="store_true", help="Do not download missing dataset videos")
     parser.add_argument("--mock", action="store_true", help="Use BBOX/dummy masks instead of importing/running SAM3")
