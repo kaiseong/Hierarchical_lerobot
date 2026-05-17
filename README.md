@@ -149,11 +149,19 @@ cd Hierarchical_lerobot
 
 ### 2. Python 환경
 
-Python 3.10 또는 3.11 환경을 권장한다.
+Python **3.12** 환경을 사용한다. 이 repository의 `pyproject.toml`도 `requires-python = ">=3.12"`로 설정되어 있으므로, 3.12 기준으로 맞추는 것이 가장 안전하다.
 
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
+python -m pip install -U pip setuptools wheel
+```
+
+`python3.12`가 없거나 conda/mamba를 선호하면:
+
+```bash
+conda create -n lerobot-sam3 python=3.12 -y
+conda activate lerobot-sam3
 python -m pip install -U pip setuptools wheel
 ```
 
@@ -321,4 +329,3 @@ role_masks/          # --save-role-masks 사용 시
 5. SAM3 설치/체크포인트 접근 권한.
 6. RTX 5090 서버의 PyTorch/CUDA 호환성.
 7. 결과를 보고 prompt 후보를 줄일지, bbox를 넓힐지, dilation을 조정할지 결정.
-
