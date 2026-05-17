@@ -1,177 +1,311 @@
-<p align="center">
-  <img alt="LeRobot, Hugging Face Robotics Library" src="./media/readme/lerobot-logo-thumbnail.png" width="100%">
-</p>
+# Hierarchical LeRobot — RB-Y1 SAM3 Filtering Phase 0
 
-<div align="center">
+이 repository는 RB-Y1 + LeRobot pi0.5 데모에서 **SAM3 기반 이미지 전처리**를 1차 실험에 넣기 전에, 먼저 prompt/BBOX segmentation이 실제 데이터셋에서 잘 되는지 확인하기 위한 0차 테스트 코드를 담고 있다.
 
-[![Tests](https://github.com/huggingface/lerobot/actions/workflows/latest_deps_tests.yml/badge.svg?branch=main)](https://github.com/huggingface/lerobot/actions/workflows/latest_deps_tests.yml?query=branch%3Amain)
-[![Tests](https://github.com/huggingface/lerobot/actions/workflows/docker_publish.yml/badge.svg?branch=main)](https://github.com/huggingface/lerobot/actions/workflows/docker_publish.yml?query=branch%3Amain)
-[![Python versions](https://img.shields.io/pypi/pyversions/lerobot)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/huggingface/lerobot/blob/main/LICENSE)
-[![Status](https://img.shields.io/pypi/status/lerobot)](https://pypi.org/project/lerobot/)
-[![Version](https://img.shields.io/pypi/v/lerobot)](https://pypi.org/project/lerobot/)
-[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v2.1-ff69b4.svg)](https://github.com/huggingface/lerobot/blob/main/CODE_OF_CONDUCT.md)
-[![Discord](https://img.shields.io/badge/Discord-Join_Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/q8Dzzpym3f)
+## 목표
 
-</div>
+최종 1차 목표는 기존 pi0.5 구조와 16축 state/action은 그대로 두고, VLA 입력 RGB 이미지만 다음처럼 바꾸는 것이다.
 
-**LeRobot** aims to provide models, datasets, and tools for real-world robotics in PyTorch. The goal is to lower the barrier to entry so that everyone can contribute to and benefit from shared datasets and pretrained models.
-
-🤗 A hardware-agnostic, Python-native interface that standardizes control across diverse platforms, from low-cost arms (SO-100) to humanoids.
-
-🤗 A standardized, scalable LeRobotDataset format (Parquet + MP4 or images) hosted on the Hugging Face Hub, enabling efficient storage, streaming and visualization of massive robotic datasets.
-
-🤗 State-of-the-art policies that have been shown to transfer to the real-world ready for training and deployment.
-
-🤗 Comprehensive support for the open-source ecosystem to democratize physical AI.
-
-## Quick Start
-
-LeRobot can be installed directly from PyPI.
-
-```bash
-pip install lerobot
-lerobot-info
+```text
+original RGB
+  + SAM3 keep mask(target object + robot arm/gripper + CAN/PET bins)
+  -> same-resolution filtered RGB
+  -> background pixels = black
+  -> pi0.5 input
 ```
 
-> [!IMPORTANT]
-> For detailed installation guide, please see the [Installation Documentation](https://huggingface.co/docs/lerobot/installation).
+0차 목표는 아직 학습/실시간 데모를 하지 않고, **데이터셋 샘플 이미지에 SAM3를 적용해 어떤 prompt/BBOX 전략이 잘 되는지 확인**하는 것이다.
 
-## Robots & Control
+## 추가된 파일
 
-<div align="center">
-  <img src="./media/readme/robots_control_video.webp" width="640px" alt="Reachy 2 Demo">
-</div>
-
-LeRobot provides a unified `Robot` class interface that decouples control logic from hardware specifics. It supports a wide range of robots and teleoperation devices.
-
-```python
-from lerobot.robots.myrobot import MyRobot
-
-# Connect to a robot
-robot = MyRobot(config=...)
-robot.connect()
-
-# Read observation and send action
-obs = robot.get_observation()
-action = model.select_action(obs)
-robot.send_action(action)
+```text
+examples/sam3_filtering/
+├── sam3_filter_dataset.py
+├── configs/
+│   └── rby1_recycling_sam3_test.json
+└── outputs/                 # 실행 결과 저장 위치, git ignore 권장
 ```
 
-**Supported Hardware:** SO100, LeKiwi, Koch, HopeJR, OMX, EarthRover, Reachy2, Gamepads, Keyboards, Phones, OpenARM, Unitree G1.
+- `sam3_filter_dataset.py`: LeRobot dataset을 읽고 camera별 SAM3 설정을 적용해 filtered/overlay/mask PNG와 manifest를 저장한다.
+- `rby1_recycling_sam3_test.json`: front/right wrist/left wrist별 prompt와 BBOX 정책을 정의한다.
 
-While these devices are natively integrated into the LeRobot codebase, the library is designed to be extensible. You can easily implement the Robot interface to utilize LeRobot's data collection, training, and visualization tools for your own custom robot.
+## 0차 실험 설계
 
-For detailed hardware setup guides, see the [Hardware Documentation](https://huggingface.co/docs/lerobot/integrate_hardware).
+### Front camera
 
-## LeRobot Dataset
+Front pose는 고정이고 CAN/PET 통 위치도 고정이라고 가정한다.
 
-To solve the data fragmentation problem in robotics, we utilize the **LeRobotDataset** format.
+| 대상 | 방식 |
+|---|---|
+| CAN/PET 물체 | text prompt |
+| Gray CAN bin | fixed BBOX + prompt |
+| Light-green PET bin | fixed BBOX + prompt |
+| Robot arm / gripper | dynamic BBOX + prompt, 또는 broad workspace BBOX + prompt |
 
-- **Structure:** Synchronized MP4 videos (or images) for vision and Parquet files for state/action data.
-- **HF Hub Integration:** Explore thousands of robotics datasets on the [Hugging Face Hub](https://huggingface.co/lerobot).
-- **Tools:** Seamlessly delete episodes, split by indices/fractions, add/remove features, and merge multiple datasets.
+### Wrist cameras
 
-```python
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
+Wrist는 팔 움직임에 따라 시야가 크게 바뀐다.
 
-# Load a dataset from the Hub
-dataset = LeRobotDataset("lerobot/aloha_mobile_cabinet")
+| 대상 | 방식 |
+|---|---|
+| CAN/PET 물체 | text prompt |
+| Gray/PET bin | text prompt only, optional |
+| Robot gripper | broad lower BBOX + prompt |
 
-# Access data (automatically handles video decoding)
-episode_index=0
-print(f"{dataset[episode_index]['action'].shape=}\n")
+Wrist에서 bin은 안 보일 수 있으므로 optional로 둔다. Gripper BBOX는 mask가 잘리지 않도록 하단 넓은 영역에서 시작한다.
+
+## JSON 설정 파일
+
+기본 설정 파일:
+
+```text
+examples/sam3_filtering/configs/rby1_recycling_sam3_test.json
 ```
 
-Learn more about it in the [LeRobotDataset Documentation](https://huggingface.co/docs/lerobot/lerobot-dataset-v3)
+먼저 반드시 수정해야 할 부분:
 
-## SoTA Models
-
-LeRobot implements state-of-the-art policies in pure PyTorch, covering Imitation Learning, Reinforcement Learning, and Vision-Language-Action (VLA) models, with more coming soon. It also provides you with the tools to instrument and inspect your training process.
-
-<p align="center">
-  <img alt="Gr00t Architecture" src="./media/readme/VLA_architecture.jpg" width="640px">
-</p>
-
-Training a policy is as simple as running a script configuration:
-
-```bash
-lerobot-train \
-  --policy=act \
-  --dataset.repo_id=lerobot/aloha_mobile_cabinet
-```
-
-| Category                   | Models                                                                                                                                                                                                                  |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Imitation Learning**     | [ACT](./docs/source/policy_act_README.md), [Diffusion](./docs/source/policy_diffusion_README.md), [VQ-BeT](./docs/source/policy_vqbet_README.md), [Multitask DiT Policy](./docs/source/policy_multi_task_dit_README.md) |
-| **Reinforcement Learning** | [HIL-SERL](./docs/source/hilserl.mdx), [TDMPC](./docs/source/policy_tdmpc_README.md) & QC-FQL (coming soon)                                                                                                             |
-| **VLAs Models**            | [Pi0Fast](./docs/source/pi0fast.mdx), [Pi0.5](./docs/source/pi05.mdx), [GR00T N1.5](./docs/source/policy_groot_README.md), [SmolVLA](./docs/source/policy_smolvla_README.md), [XVLA](./docs/source/xvla.mdx)            |
-
-Similarly to the hardware, you can easily implement your own policy & leverage LeRobot's data collection, training, and visualization tools, and share your model to the HF Hub
-
-For detailed policy setup guides, see the [Policy Documentation](https://huggingface.co/docs/lerobot/bring_your_own_policies). For GPU/RAM requirements and expected training time per policy, see the [Compute Hardware Guide](https://huggingface.co/docs/lerobot/hardware_guide).
-
-## Inference & Evaluation
-
-Evaluate your policies in simulation or on real hardware using the unified evaluation script. LeRobot supports standard benchmarks like **LIBERO**, **MetaWorld** and more to come.
-
-```bash
-# Evaluate a policy on the LIBERO benchmark
-lerobot-eval \
-  --policy.path=lerobot/pi0_libero_finetuned \
-  --env.type=libero \
-  --env.task=libero_object \
-  --eval.n_episodes=10
-```
-
-Learn how to implement your own simulation environment or benchmark and distribute it from the HF Hub by following the [EnvHub Documentation](https://huggingface.co/docs/lerobot/envhub)
-
-## Resources
-
-- **[Documentation](https://huggingface.co/docs/lerobot/index):** The complete guide to tutorials & API.
-- **[Chinese Tutorials: LeRobot+SO-ARM101中文教程-同济子豪兄](https://zihao-ai.feishu.cn/wiki/space/7589642043471924447)** Detailed doc for assembling, teleoperate, dataset, train, deploy. Verified by Seed Studio and 5 global hackathon players.
-- **[Discord](https://discord.gg/q8Dzzpym3f):** Join the `LeRobot` server to discuss with the community.
-- **[X](https://x.com/LeRobotHF):** Follow us on X to stay up-to-date with the latest developments.
-- **[Robot Learning Tutorial](https://huggingface.co/spaces/lerobot/robot-learning-tutorial):** A free, hands-on course to learn robot learning using LeRobot.
-
-## Citation
-
-If you use LeRobot in your project, please cite the GitHub repository to acknowledge the ongoing development and contributors:
-
-```bibtex
-@misc{cadene2024lerobot,
-    author = {Cadene, Remi and Alibert, Simon and Soare, Alexander and Gallouedec, Quentin and Zouitine, Adil and Palma, Steven and Kooijmans, Pepijn and Aractingi, Michel and Shukor, Mustafa and Aubakirova, Dana and Russi, Martino and Capuano, Francesco and Pascal, Caroline and Choghari, Jade and Moss, Jess and Wolf, Thomas},
-    title = {LeRobot: State-of-the-art Machine Learning for Real-World Robotics in Pytorch},
-    howpublished = "\url{https://github.com/huggingface/lerobot}",
-    year = {2024}
+```json
+{
+  "dataset": {
+    "repo_id": "kaiseong/rby1-recycling-demo",
+    "root": null,
+    "episodes": [0],
+    "camera_keys": {
+      "front": "observation.images.front",
+      "left_wrist": "observation.images.left_wrist",
+      "right_wrist": "observation.images.right_wrist"
+    }
+  }
 }
 ```
 
-If you are referencing our research or the academic paper, please also cite our ICLR publication:
+실제 데이터셋의 camera key가 다르면 `camera_keys`를 바꿔야 한다. 확인용 예시:
 
-<details>
-<summary><b>ICLR 2026 Paper</b></summary>
+```bash
+python examples/dataset/load_lerobot_dataset.py
+```
 
-```bibtex
-@inproceedings{cadenelerobot,
-  title={LeRobot: An Open-Source Library for End-to-End Robot Learning},
-  author={Cadene, Remi and Alibert, Simon and Capuano, Francesco and Aractingi, Michel and Zouitine, Adil and Kooijmans, Pepijn and Choghari, Jade and Russi, Martino and Pascal, Caroline and Palma, Steven and Shukor, Mustafa and Moss, Jess and Soare, Alexander and Aubakirova, Dana and Lhoest, Quentin and Gallou\'edec, Quentin and Wolf, Thomas},
-  booktitle={The Fourteenth International Conference on Learning Representations},
-  year={2026},
-  url={https://arxiv.org/abs/2602.22818}
+또는 Python에서:
+
+```python
+from lerobot.datasets import LeRobotDatasetMetadata
+meta = LeRobotDatasetMetadata("<your_dataset_repo_id>", root="<optional_local_root>")
+print(meta.camera_keys)
+print(meta.features)
+```
+
+### BBOX format
+
+현재 config는 `normalized_xyxy`를 기본으로 쓴다.
+
+```json
+{
+  "format": "normalized_xyxy",
+  "value": [0.05, 0.35, 0.45, 0.95]
 }
 ```
 
-</details>
+의미:
 
-## Contribute
+```text
+[x0, y0, x1, y1]
+0.0~1.0 normalized image coordinates
+```
 
-We welcome contributions from everyone in the community! To get started, please read our [CONTRIBUTING.md](https://github.com/huggingface/lerobot/blob/main/CONTRIBUTING.md) guide. Whether you're adding a new feature, improving documentation, or fixing a bug, your help and feedback are invaluable. We're incredibly excited about the future of open-source robotics and can't wait to work with you on what's next—thank you for your support!
+지원 format:
 
-<p align="center">
-  <img alt="SO101 Video" src="./media/readme/so100_video.webp" width="640px">
-</p>
+```text
+normalized_xyxy
+normalized_cxcywh
+pixel_xyxy
+pixel_xywh
+```
 
-<div align="center">
-<sub>Built by the <a href="https://huggingface.co/lerobot">LeRobot</a> team at <a href="https://huggingface.co">Hugging Face</a> with ❤️</sub>
-</div>
+## 설치
+
+아래는 RTX 5090 또는 Thor 서버에서 실행하는 것을 기준으로 한다. 이 repo를 로컬 MX250 PC에서 실행하면 SAM3 실제 inference는 매우 느리거나 실패할 수 있다. 로컬 PC에서는 `--mock`으로 dataset/key/output plumbing만 확인한다.
+
+### 1. Repo 준비
+
+```bash
+git clone https://github.com/kaiseong/Hierarchical_lerobot.git
+cd Hierarchical_lerobot
+```
+
+이미 `/home/kgs/lerobot` 같은 로컬 checkout을 쓰는 경우에는 해당 경로에서 진행해도 된다.
+
+### 2. Python 환경
+
+Python 3.10 또는 3.11 환경을 권장한다.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip setuptools wheel
+```
+
+### 3. PyTorch 설치
+
+RTX 5090은 Blackwell 계열이므로 PyTorch/CUDA wheel 호환성이 중요하다. 먼저 공식 PyTorch selector에서 현재 driver에 맞는 CUDA build를 확인한다.
+
+- 공식 설치 selector: https://docs.pytorch.org/get-started/locally/
+
+예시 형태:
+
+```bash
+# 예시일 뿐이다. 실제 5090 서버의 driver/CUDA에 맞춰 PyTorch 공식 selector 명령을 사용한다.
+pip install torch torchvision torchaudio --index-url <official-pytorch-cuda-wheel-index>
+```
+
+설치 후 확인:
+
+```bash
+python - <<'PY'
+import torch
+print(torch.__version__)
+print(torch.cuda.is_available())
+print(torch.cuda.get_device_name(0))
+print(torch.cuda.get_device_capability(0))
+PY
+```
+
+### 4. LeRobot 설치
+
+```bash
+pip install -e ".[dataset,pi]"
+```
+
+필요하면 시각화/학습 extras를 추가한다.
+
+```bash
+pip install -e ".[dataset,pi,training,viz]"
+```
+
+### 5. SAM3 설치
+
+공식 SAM3 repository를 같은 상위 폴더에 clone해서 editable 설치한다.
+
+```bash
+cd ..
+git clone https://github.com/facebookresearch/sam3.git
+cd sam3
+pip install -e .
+cd ../Hierarchical_lerobot
+```
+
+SAM3 checkpoint가 Hugging Face에서 자동 다운로드되는 경우가 있으므로, 필요하면 로그인한다.
+
+```bash
+huggingface-cli login
+```
+
+### 6. 추가 유틸
+
+```bash
+pip install pillow opencv-python
+```
+
+`opencv-python`은 mask dilation에 사용된다. 없어도 PIL fallback을 사용한다.
+
+## 사용법
+
+### A. 로컬/저사양 PC에서 mock 실행
+
+SAM3를 실제로 돌리지 않고, BBOX와 출력 구조만 확인한다.
+
+```bash
+python examples/sam3_filtering/sam3_filter_dataset.py \
+  --config examples/sam3_filtering/configs/rby1_recycling_sam3_test.json \
+  --mock \
+  --repo-id <your_dataset_repo_id> \
+  --root <optional_local_dataset_root> \
+  --episodes 0 \
+  --max-frames-per-episode 2 \
+  --frame-stride 30 \
+  --output-dir examples/sam3_filtering/outputs/mock_ep0
+```
+
+### B. RTX 5090/Thor에서 SAM3 실제 실행
+
+```bash
+python examples/sam3_filtering/sam3_filter_dataset.py \
+  --config examples/sam3_filtering/configs/rby1_recycling_sam3_test.json \
+  --repo-id <your_dataset_repo_id> \
+  --root <optional_local_dataset_root> \
+  --episodes 0 \
+  --max-frames-per-episode 20 \
+  --frame-stride 15 \
+  --save-role-masks \
+  --output-dir examples/sam3_filtering/outputs/sam3_ep0
+```
+
+처음에는 episode 1개, frame 10~20장만 처리해서 prompt/BBOX가 맞는지 확인한다. 전체 dataset preprocessing은 아직 하지 않는다.
+
+## 출력물
+
+실행 후 output dir에는 다음이 저장된다.
+
+```text
+summary.json
+manifest.jsonl
+ep000000_frame000000_front_filtered.png
+                    front_overlay.png
+                    front_keep_mask.png
+                    front_config_boxes.png
+                    left_wrist_filtered.png
+                    ...
+role_masks/          # --save-role-masks 사용 시
+```
+
+- `*_filtered.png`: background가 black으로 지워진 최종 VLA 입력 후보.
+- `*_overlay.png`: keep mask가 초록색으로 overlay된 검수 이미지.
+- `*_keep_mask.png`: union keep mask.
+- `*_config_boxes.png`: JSON에 정의한 BBOX를 원본 이미지 위에 그린 확인 이미지.
+- `manifest.jsonl`: frame/camera/role별 score, missing 여부, 처리 시간.
+
+## 확인 기준
+
+0차에서 봐야 할 것:
+
+1. Front에서 CAN/PET bin BBOX가 실제 통 전체와 rim/interaction zone을 포함하는가?
+2. Wrist에서 하단 gripper BBOX가 gripper open/close 시에도 잘리지 않는가?
+3. CAN/PET object text prompt가 실제 물체를 잡는가?
+4. `PET` 단독 prompt 대신 `plastic bottle`, `PET bottle`이 더 안정적인가?
+5. robot/gripper prompt가 배경 금속물, 케이블, fixture를 오탐하지 않는가?
+6. filtered RGB에서 조작에 필요한 픽셀(object, gripper, bin rim)이 검게 지워지지 않는가?
+7. mask dilation 5/12/20 px 중 어느 정도가 가장 안전한가?
+
+## 0차 이후 1차 계획
+
+0차에서 prompt/BBOX가 안정적이면 다음 단계로 간다.
+
+```text
+1. SAM3 config 확정
+2. offline SAM-filtered training dataset 생성
+3. pi0.5를 filtered RGB dataset으로 학습
+4. server-side online SAM filtering + pi0.5 async inference 구성
+5. baseline RGB pi0.5 vs SAM-filtered pi0.5 비교
+```
+
+1차 범위에서 제외:
+
+```text
+- pi0.5 architecture 변경
+- mask channel/crop token 추가
+- FoundationPose
+- object SE(3) condition
+- EEF SE(3) robot state 변경
+```
+
+## 현재 부족하거나 직접 채워야 하는 정보
+
+아래는 5090에서 실행 전에 반드시 확인해야 한다.
+
+1. 실제 LeRobot dataset repo_id 또는 local root.
+2. 실제 camera key 이름.
+3. Front camera 기준 CAN/PET bin BBOX.
+4. Wrist camera 기준 gripper가 보이는 영역.
+5. SAM3 설치/체크포인트 접근 권한.
+6. RTX 5090 서버의 PyTorch/CUDA 호환성.
+7. 결과를 보고 prompt 후보를 줄일지, bbox를 넓힐지, dilation을 조정할지 결정.
+
