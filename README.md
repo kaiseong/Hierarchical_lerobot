@@ -33,13 +33,13 @@ examples/sam3_filtering/
 
 ### Front camera
 
-Front pose는 고정이고 CAN/PET 통 위치도 고정이라고 가정한다.
+Front pose는 고정이고 CAN/PET 통 위치도 고정이라고 가정한다. 단, 좌우 flip 증강을 하면 gray CAN bin과 light-green PET bin의 이미지상 위치가 서로 바뀌므로, 0차 테스트에서는 두 통 모두 같은 shared bin search-region BBOX 후보를 사용하고 text prompt로 색/종류를 구분한다.
 
 | 대상 | 방식 |
 |---|---|
 | CAN/PET 물체 | text prompt |
-| Gray CAN bin | fixed BBOX + prompt |
-| Light-green PET bin | fixed BBOX + prompt |
+| Gray CAN bin | shared fixed bin search-region BBOX + prompt |
+| Light-green PET bin | shared fixed bin search-region BBOX + prompt |
 | Robot arm / gripper | dynamic BBOX + prompt, 또는 broad workspace BBOX + prompt |
 
 ### Wrist cameras
@@ -120,6 +120,19 @@ normalized_cxcywh
 pixel_xyxy
 pixel_xywh
 ```
+
+
+### Flip 증강과 bin BBOX 주의점
+
+Front에서 `can_bin`과 `pet_bin`에 서로 다른 role-specific positive BBOX를 고정하면, 좌우 flip 증강 이미지에서는 CAN/PET 위치가 반대로 바뀌어 BBOX가 틀어진다. 그래서 config는 두 bin role 모두에 같은 `search_regions`를 사용한다.
+
+```text
+can_bin prompt = "gray bin"
+pet_bin prompt = "light green bin"
+shared search_regions = [left-bin-candidate, right-bin-candidate]
+```
+
+`search_regions`는 SAM3에 positive object box로 넣는 `boxes`와 다르다. Text prompt로 나온 mask 후보 중 shared bin 영역과 겹치는 것만 채택하기 위한 후처리 filter다. 즉, flip 증강에 안전하게 양쪽 bin 후보 영역을 모두 허용하되, 실제 구분은 prompt가 한다.
 
 ## 설치
 

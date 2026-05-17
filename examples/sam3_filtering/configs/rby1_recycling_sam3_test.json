@@ -3,7 +3,9 @@
   "dataset": {
     "repo_id": "kaiseong/rby1-recycling-demo",
     "root": null,
-    "episodes": [0],
+    "episodes": [
+      0
+    ],
     "camera_keys": {
       "front": "observation.images.front",
       "left_wrist": "observation.images.left_wrist",
@@ -21,55 +23,109 @@
   },
   "cameras": {
     "front": {
-      "notes": "Front camera pose is fixed. Bins use fixed BBOX+prompt. Robot can start with broad workspace BBOX+prompt, later replaced with dynamic BBOX from calibration/FK.",
+      "notes": "Front camera pose is fixed. Bins use shared fixed search-region BBOXes + text prompt, not role-specific positive boxes, because horizontal-flip augmentation swaps gray CAN bin and light-green PET bin positions. Robot can start with broad workspace BBOX+prompt, later replaced with dynamic BBOX from calibration/FK.",
       "roles": [
         {
           "name": "can_object",
-          "prompts": ["aluminum can", "can"],
+          "prompts": [
+            "aluminum can",
+            "can"
+          ],
           "optional": false,
           "max_instances": 3
         },
         {
           "name": "pet_object",
-          "prompts": ["plastic bottle", "PET bottle", "bottle"],
+          "prompts": [
+            "plastic bottle",
+            "PET bottle",
+            "bottle"
+          ],
           "optional": false,
           "max_instances": 3
         },
         {
           "name": "can_bin",
-          "prompts": ["gray bin", "gray container"],
+          "prompts": [
+            "gray bin",
+            "gray container"
+          ],
           "optional": false,
-          "boxes": [
+          "search_regions": [
             {
-              "label": true,
               "format": "normalized_xyxy",
-              "value": [0.05, 0.35, 0.45, 0.95],
-              "note": "TODO: replace with real CAN bin bbox from front camera"
+              "value": [
+                0.05,
+                0.35,
+                0.45,
+                0.95
+              ],
+              "note": "Left bin candidate region. Keep this shared for both CAN/PET so horizontal-flip augmentation is valid."
+            },
+            {
+              "format": "normalized_xyxy",
+              "value": [
+                0.55,
+                0.35,
+                0.95,
+                0.95
+              ],
+              "note": "Right bin candidate region. Keep this shared for both CAN/PET so horizontal-flip augmentation is valid."
             }
-          ]
+          ],
+          "restrict_to_search_region": false,
+          "notes": "Shared fixed bin search regions are used instead of role-specific positive boxes because horizontal flip augmentation swaps CAN/PET locations."
         },
         {
           "name": "pet_bin",
-          "prompts": ["light green bin", "green bin", "green container"],
+          "prompts": [
+            "light green bin",
+            "green bin",
+            "green container"
+          ],
           "optional": false,
-          "boxes": [
+          "search_regions": [
             {
-              "label": true,
               "format": "normalized_xyxy",
-              "value": [0.55, 0.35, 0.95, 0.95],
-              "note": "TODO: replace with real PET bin bbox from front camera"
+              "value": [
+                0.05,
+                0.35,
+                0.45,
+                0.95
+              ],
+              "note": "Left bin candidate region. Keep this shared for both CAN/PET so horizontal-flip augmentation is valid."
+            },
+            {
+              "format": "normalized_xyxy",
+              "value": [
+                0.55,
+                0.35,
+                0.95,
+                0.95
+              ],
+              "note": "Right bin candidate region. Keep this shared for both CAN/PET so horizontal-flip augmentation is valid."
             }
-          ]
+          ],
+          "restrict_to_search_region": false,
+          "notes": "Shared fixed bin search regions are used instead of role-specific positive boxes because horizontal flip augmentation swaps CAN/PET locations."
         },
         {
           "name": "robot_arm_gripper",
-          "prompts": ["robot arm", "robot gripper"],
+          "prompts": [
+            "robot arm",
+            "robot gripper"
+          ],
           "optional": true,
           "boxes": [
             {
               "label": true,
               "format": "normalized_xyxy",
-              "value": [0.10, 0.00, 0.90, 0.95],
+              "value": [
+                0.1,
+                0.0,
+                0.9,
+                0.95
+              ],
               "note": "Broad front workspace prior. Replace with dynamic bbox when camera calibration/FK is ready."
             }
           ],
@@ -82,37 +138,59 @@
       "roles": [
         {
           "name": "can_object",
-          "prompts": ["aluminum can", "can"],
+          "prompts": [
+            "aluminum can",
+            "can"
+          ],
           "optional": false,
           "max_instances": 3
         },
         {
           "name": "pet_object",
-          "prompts": ["plastic bottle", "PET bottle", "bottle"],
+          "prompts": [
+            "plastic bottle",
+            "PET bottle",
+            "bottle"
+          ],
           "optional": false,
           "max_instances": 3
         },
         {
           "name": "can_bin",
-          "prompts": ["gray bin", "gray container"],
+          "prompts": [
+            "gray bin",
+            "gray container"
+          ],
           "optional": true,
           "max_instances": 2
         },
         {
           "name": "pet_bin",
-          "prompts": ["light green bin", "green bin", "green container"],
+          "prompts": [
+            "light green bin",
+            "green bin",
+            "green container"
+          ],
           "optional": true,
           "max_instances": 2
         },
         {
           "name": "robot_gripper",
-          "prompts": ["robot gripper", "robot hand"],
+          "prompts": [
+            "robot gripper",
+            "robot hand"
+          ],
           "optional": false,
           "boxes": [
             {
               "label": true,
               "format": "normalized_xyxy",
-              "value": [0.00, 0.45, 1.00, 1.00],
+              "value": [
+                0.0,
+                0.45,
+                1.0,
+                1.0
+              ],
               "note": "Broad lower-half gripper prior for wrist camera."
             }
           ],
@@ -125,37 +203,59 @@
       "roles": [
         {
           "name": "can_object",
-          "prompts": ["aluminum can", "can"],
+          "prompts": [
+            "aluminum can",
+            "can"
+          ],
           "optional": false,
           "max_instances": 3
         },
         {
           "name": "pet_object",
-          "prompts": ["plastic bottle", "PET bottle", "bottle"],
+          "prompts": [
+            "plastic bottle",
+            "PET bottle",
+            "bottle"
+          ],
           "optional": false,
           "max_instances": 3
         },
         {
           "name": "can_bin",
-          "prompts": ["gray bin", "gray container"],
+          "prompts": [
+            "gray bin",
+            "gray container"
+          ],
           "optional": true,
           "max_instances": 2
         },
         {
           "name": "pet_bin",
-          "prompts": ["light green bin", "green bin", "green container"],
+          "prompts": [
+            "light green bin",
+            "green bin",
+            "green container"
+          ],
           "optional": true,
           "max_instances": 2
         },
         {
           "name": "robot_gripper",
-          "prompts": ["robot gripper", "robot hand"],
+          "prompts": [
+            "robot gripper",
+            "robot hand"
+          ],
           "optional": false,
           "boxes": [
             {
               "label": true,
               "format": "normalized_xyxy",
-              "value": [0.00, 0.45, 1.00, 1.00],
+              "value": [
+                0.0,
+                0.45,
+                1.0,
+                1.0
+              ],
               "note": "Broad lower-half gripper prior for wrist camera."
             }
           ],
