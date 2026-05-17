@@ -1,0 +1,167 @@
+{
+  "description": "Phase-0 SAM3 prompt/BBOX segmentation test for RB-Y1 pi0.5 recycling demo. Edit dataset keys and BBOX values before running on the 5090/Thor machine.",
+  "dataset": {
+    "repo_id": "kaiseong/rby1-recycling-demo",
+    "root": null,
+    "episodes": [0],
+    "camera_keys": {
+      "front": "observation.images.front",
+      "left_wrist": "observation.images.left_wrist",
+      "right_wrist": "observation.images.right_wrist"
+    }
+  },
+  "sam3": {
+    "confidence_threshold": 0.5,
+    "device": "cuda",
+    "dtype": "bfloat16",
+    "mask_dilation_px": 12,
+    "background_value": 0,
+    "max_instances_per_role": 3,
+    "fail_on_required_missing": false
+  },
+  "cameras": {
+    "front": {
+      "notes": "Front camera pose is fixed. Bins use fixed BBOX+prompt. Robot can start with broad workspace BBOX+prompt, later replaced with dynamic BBOX from calibration/FK.",
+      "roles": [
+        {
+          "name": "can_object",
+          "prompts": ["aluminum can", "can"],
+          "optional": false,
+          "max_instances": 3
+        },
+        {
+          "name": "pet_object",
+          "prompts": ["plastic bottle", "PET bottle", "bottle"],
+          "optional": false,
+          "max_instances": 3
+        },
+        {
+          "name": "can_bin",
+          "prompts": ["gray bin", "gray container"],
+          "optional": false,
+          "boxes": [
+            {
+              "label": true,
+              "format": "normalized_xyxy",
+              "value": [0.05, 0.35, 0.45, 0.95],
+              "note": "TODO: replace with real CAN bin bbox from front camera"
+            }
+          ]
+        },
+        {
+          "name": "pet_bin",
+          "prompts": ["light green bin", "green bin", "green container"],
+          "optional": false,
+          "boxes": [
+            {
+              "label": true,
+              "format": "normalized_xyxy",
+              "value": [0.55, 0.35, 0.95, 0.95],
+              "note": "TODO: replace with real PET bin bbox from front camera"
+            }
+          ]
+        },
+        {
+          "name": "robot_arm_gripper",
+          "prompts": ["robot arm", "robot gripper"],
+          "optional": true,
+          "boxes": [
+            {
+              "label": true,
+              "format": "normalized_xyxy",
+              "value": [0.10, 0.00, 0.90, 0.95],
+              "note": "Broad front workspace prior. Replace with dynamic bbox when camera calibration/FK is ready."
+            }
+          ],
+          "max_instances": 5
+        }
+      ]
+    },
+    "left_wrist": {
+      "notes": "Wrist camera view changes with arm motion. Gripper uses broad lower BBOX+prompt; bins are prompt-only and optional because they may be out of view.",
+      "roles": [
+        {
+          "name": "can_object",
+          "prompts": ["aluminum can", "can"],
+          "optional": false,
+          "max_instances": 3
+        },
+        {
+          "name": "pet_object",
+          "prompts": ["plastic bottle", "PET bottle", "bottle"],
+          "optional": false,
+          "max_instances": 3
+        },
+        {
+          "name": "can_bin",
+          "prompts": ["gray bin", "gray container"],
+          "optional": true,
+          "max_instances": 2
+        },
+        {
+          "name": "pet_bin",
+          "prompts": ["light green bin", "green bin", "green container"],
+          "optional": true,
+          "max_instances": 2
+        },
+        {
+          "name": "robot_gripper",
+          "prompts": ["robot gripper", "robot hand"],
+          "optional": false,
+          "boxes": [
+            {
+              "label": true,
+              "format": "normalized_xyxy",
+              "value": [0.00, 0.45, 1.00, 1.00],
+              "note": "Broad lower-half gripper prior for wrist camera."
+            }
+          ],
+          "max_instances": 3
+        }
+      ]
+    },
+    "right_wrist": {
+      "notes": "Same policy as left_wrist; adjust gripper BBOX if the right wrist camera sees the fingers in a different region.",
+      "roles": [
+        {
+          "name": "can_object",
+          "prompts": ["aluminum can", "can"],
+          "optional": false,
+          "max_instances": 3
+        },
+        {
+          "name": "pet_object",
+          "prompts": ["plastic bottle", "PET bottle", "bottle"],
+          "optional": false,
+          "max_instances": 3
+        },
+        {
+          "name": "can_bin",
+          "prompts": ["gray bin", "gray container"],
+          "optional": true,
+          "max_instances": 2
+        },
+        {
+          "name": "pet_bin",
+          "prompts": ["light green bin", "green bin", "green container"],
+          "optional": true,
+          "max_instances": 2
+        },
+        {
+          "name": "robot_gripper",
+          "prompts": ["robot gripper", "robot hand"],
+          "optional": false,
+          "boxes": [
+            {
+              "label": true,
+              "format": "normalized_xyxy",
+              "value": [0.00, 0.45, 1.00, 1.00],
+              "note": "Broad lower-half gripper prior for wrist camera."
+            }
+          ],
+          "max_instances": 3
+        }
+      ]
+    }
+  }
+}
