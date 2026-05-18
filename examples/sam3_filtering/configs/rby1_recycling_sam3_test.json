@@ -23,12 +23,10 @@
   },
   "cameras": {
     "front": {
-      "notes": "Front camera pose is fixed. Bins use shared fixed search-region BBOXes + text prompt, not role-specific positive boxes, because horizontal-flip augmentation swaps gray CAN bin and light-green PET bin positions. Robot can start with broad workspace BBOX+prompt, later replaced with dynamic BBOX from calibration/FK.",
       "roles": [
         {
           "name": "can_object",
           "prompts": [
-            "aluminum can",
             "can"
           ],
           "optional": false,
@@ -38,7 +36,6 @@
           "name": "pet_object",
           "prompts": [
             "plastic bottle",
-            "PET bottle",
             "bottle"
           ],
           "optional": false,
@@ -47,67 +44,40 @@
         {
           "name": "can_bin",
           "prompts": [
-            "gray bin",
-            "gray container"
+            "grey container"
           ],
           "optional": false,
           "search_regions": [
             {
               "format": "normalized_xyxy",
               "value": [
-                0.05,
-                0.35,
-                0.45,
-                0.95
-              ],
-              "note": "Left bin candidate region. Keep this shared for both CAN/PET so horizontal-flip augmentation is valid."
-            },
-            {
-              "format": "normalized_xyxy",
-              "value": [
-                0.55,
-                0.35,
-                0.95,
-                0.95
-              ],
-              "note": "Right bin candidate region. Keep this shared for both CAN/PET so horizontal-flip augmentation is valid."
+                0.15,
+                0.0,
+                0.85,
+                0.45
+              ]
             }
           ],
-          "restrict_to_search_region": false,
-          "notes": "Shared fixed bin search regions are used instead of role-specific positive boxes because horizontal flip augmentation swaps CAN/PET locations."
+          "restrict_to_search_region": false
         },
         {
           "name": "pet_bin",
           "prompts": [
-            "light green bin",
-            "green bin",
-            "green container"
+            "yellow container"
           ],
           "optional": false,
           "search_regions": [
             {
               "format": "normalized_xyxy",
               "value": [
-                0.05,
-                0.35,
-                0.45,
-                0.95
-              ],
-              "note": "Left bin candidate region. Keep this shared for both CAN/PET so horizontal-flip augmentation is valid."
-            },
-            {
-              "format": "normalized_xyxy",
-              "value": [
-                0.55,
-                0.35,
-                0.95,
-                0.95
-              ],
-              "note": "Right bin candidate region. Keep this shared for both CAN/PET so horizontal-flip augmentation is valid."
+                0.15,
+                0.0,
+                0.85,
+                0.45
+              ]
             }
           ],
-          "restrict_to_search_region": false,
-          "notes": "Shared fixed bin search regions are used instead of role-specific positive boxes because horizontal flip augmentation swaps CAN/PET locations."
+          "restrict_to_search_region": false
         },
         {
           "name": "robot_arm_gripper",
@@ -139,7 +109,6 @@
         {
           "name": "can_object",
           "prompts": [
-            "aluminum can",
             "can"
           ],
           "optional": false,
@@ -149,7 +118,6 @@
           "name": "pet_object",
           "prompts": [
             "plastic bottle",
-            "PET bottle",
             "bottle"
           ],
           "optional": false,
@@ -158,8 +126,7 @@
         {
           "name": "can_bin",
           "prompts": [
-            "gray bin",
-            "gray container"
+            "grey container"
           ],
           "optional": true,
           "max_instances": 2
@@ -167,9 +134,7 @@
         {
           "name": "pet_bin",
           "prompts": [
-            "light green bin",
-            "green bin",
-            "green container"
+            "yellow container"
           ],
           "optional": true,
           "max_instances": 2
@@ -177,8 +142,8 @@
         {
           "name": "robot_gripper",
           "prompts": [
-            "robot gripper",
-            "robot hand"
+            "blue holder",
+            "blue robot gripper"
           ],
           "optional": false,
           "boxes": [
@@ -187,7 +152,7 @@
               "format": "normalized_xyxy",
               "value": [
                 0.0,
-                0.45,
+                0.5,
                 1.0,
                 1.0
               ],
@@ -204,7 +169,6 @@
         {
           "name": "can_object",
           "prompts": [
-            "aluminum can",
             "can"
           ],
           "optional": false,
@@ -214,7 +178,6 @@
           "name": "pet_object",
           "prompts": [
             "plastic bottle",
-            "PET bottle",
             "bottle"
           ],
           "optional": false,
@@ -223,8 +186,7 @@
         {
           "name": "can_bin",
           "prompts": [
-            "gray bin",
-            "gray container"
+            "grey container"
           ],
           "optional": true,
           "max_instances": 2
@@ -232,9 +194,7 @@
         {
           "name": "pet_bin",
           "prompts": [
-            "light green bin",
-            "green bin",
-            "green container"
+            "yellow container"
           ],
           "optional": true,
           "max_instances": 2
@@ -242,8 +202,8 @@
         {
           "name": "robot_gripper",
           "prompts": [
-            "robot gripper",
-            "robot hand"
+            "blue holder",
+            "blue robot gripper"
           ],
           "optional": false,
           "boxes": [
@@ -252,7 +212,7 @@
               "format": "normalized_xyxy",
               "value": [
                 0.0,
-                0.45,
+                0.5,
                 1.0,
                 1.0
               ],
