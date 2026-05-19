@@ -548,7 +548,8 @@ def process_camera(
     roles = camera_cfg.get("roles", [])
     keep = np.zeros(image.shape[:2], dtype=bool)
     role_logs: list[dict[str, Any]] = []
-    role_dir = images_dir / "role_masks"
+    camera_images_dir = images_dir / camera_alias
+    role_dir = camera_images_dir / "role_masks"
     if save_role_masks:
         role_dir.mkdir(parents=True, exist_ok=True)
 
@@ -567,7 +568,7 @@ def process_camera(
         role_mask = result.mask
         keep |= role_mask
         if save_role_masks:
-            Image.fromarray(role_mask.astype(np.uint8) * 255).save(role_dir / f"{frame_stem}_{camera_alias}_{result.name}.png")
+            Image.fromarray(role_mask.astype(np.uint8) * 255).save(role_dir / f"{frame_stem}_{result.name}.png")
         role_logs.append(
             {
                 "name": result.name,
@@ -585,27 +586,27 @@ def process_camera(
 
     dilation_px = int(sam_cfg.get("mask_dilation_px", 0))
     keep = dilate_mask(keep, dilation_px)
-    images_dir.mkdir(parents=True, exist_ok=True)
+    camera_images_dir.mkdir(parents=True, exist_ok=True)
     image_kind_set = set(image_kinds)
     outputs: dict[str, str] = {}
 
     if "filtered" in image_kind_set:
         filtered = apply_keep_mask(image, keep, int(sam_cfg.get("background_value", 0)))
-        path = images_dir / f"{frame_stem}_{camera_alias}_filtered.png"
+        path = camera_images_dir / f"{frame_stem}_filtered.png"
         Image.fromarray(filtered).save(path)
         outputs["filtered"] = str(path.relative_to(out_dir))
     if "overlay" in image_kind_set:
         overlay = make_overlay(image, keep)
-        path = images_dir / f"{frame_stem}_{camera_alias}_overlay.png"
+        path = camera_images_dir / f"{frame_stem}_overlay.png"
         Image.fromarray(overlay).save(path)
         outputs["overlay"] = str(path.relative_to(out_dir))
     if "keep_mask" in image_kind_set:
-        path = images_dir / f"{frame_stem}_{camera_alias}_keep_mask.png"
+        path = camera_images_dir / f"{frame_stem}_keep_mask.png"
         Image.fromarray(keep.astype(np.uint8) * 255).save(path)
         outputs["keep_mask"] = str(path.relative_to(out_dir))
     if "config_boxes" in image_kind_set:
         boxes_preview = draw_config_boxes(image, roles)
-        path = images_dir / f"{frame_stem}_{camera_alias}_config_boxes.png"
+        path = camera_images_dir / f"{frame_stem}_config_boxes.png"
         Image.fromarray(boxes_preview).save(path)
         outputs["config_boxes"] = str(path.relative_to(out_dir))
 
@@ -696,7 +697,10 @@ def write_output_videos(
     videos_dir = out_dir / "videos"
     for camera_alias in camera_aliases:
         for kind in video_kinds:
-            image_paths = sorted(images_dir.glob(f"ep*_frame*_{camera_alias}_{kind}.png"))
+            camera_images_dir = images_dir / camera_alias
+            image_paths = sorted(camera_images_dir.glob(f"ep*_frame*_{kind}.png"))
+            if not image_paths:
+                image_paths = sorted(images_dir.glob(f"ep*_frame*_{camera_alias}_{kind}.png"))
             if not image_paths:
                 continue
             output_path = videos_dir / f"{camera_alias}_{kind}.mp4"
