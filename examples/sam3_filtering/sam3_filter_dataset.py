@@ -13,9 +13,12 @@ and output layout. Run without `--mock` on the RTX 5090/Thor machine.
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import json
 import math
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -57,6 +60,12 @@ def parse_optional_frame_limit(value: str | None) -> int | None:
     if parsed < 0:
         return None
     return parsed
+
+
+def parse_csv(value: str | None) -> list[str]:
+    if value is None or value.strip() == "":
+        return []
+    return [part.strip() for part in value.split(",") if part.strip()]
 
 
 def scalar_to_int(value: Any) -> int:
@@ -237,6 +246,56 @@ def draw_config_boxes(image: np.ndarray, roles: list[dict[str, Any]]) -> np.ndar
     return np.asarray(pil)
 
 
+def summarize_ms(values: list[float]) -> dict[str, float | int | None]:
+    if not values:
+        return {"count": 0, "avg_ms": None, "min_ms": None, "max_ms": None}
+    return {
+        "count": len(values),
+        "avg_ms": round(sum(values) / len(values), 3),
+        "min_ms": round(min(values), 3),
+        "max_ms": round(max(values), 3),
+    }
+
+
+class TimingAccumulator:
+    def __init__(self) -> None:
+        self.frame_wall_ms: list[float] = []
+        self.camera_wall_ms: list[float] = []
+        self.camera_wall_ms_by_camera: dict[str, list[float]] = defaultdict(list)
+        self.role_ms_by_camera_role: dict[str, list[float]] = defaultdict(list)
+
+    def add_frame(self, elapsed_ms: float) -> None:
+        self.frame_wall_ms.append(elapsed_ms)
+
+    def add_camera_log(self, cam_log: dict[str, Any]) -> None:
+        camera = str(cam_log.get("camera", "unknown"))
+        elapsed = cam_log.get("elapsed_ms")
+        if isinstance(elapsed, (int, float)):
+            elapsed_f = float(elapsed)
+            self.camera_wall_ms.append(elapsed_f)
+            self.camera_wall_ms_by_camera[camera].append(elapsed_f)
+        for role in cam_log.get("roles", []) or []:
+            role_elapsed = role.get("elapsed_ms")
+            role_name = role.get("name", "unknown")
+            if isinstance(role_elapsed, (int, float)):
+                self.role_ms_by_camera_role[f"{camera}.{role_name}"].append(float(role_elapsed))
+
+    def to_summary(self, camera_workers: int, role_workers: int) -> dict[str, Any]:
+        return {
+            "camera_workers": camera_workers,
+            "role_workers": role_workers,
+            "max_concurrent_sam3_models_estimate": camera_workers if role_workers == 1 else camera_workers * role_workers,
+            "frame_wall_ms": summarize_ms(self.frame_wall_ms),
+            "camera_wall_ms": summarize_ms(self.camera_wall_ms),
+            "camera_wall_ms_by_camera": {
+                camera: summarize_ms(values) for camera, values in sorted(self.camera_wall_ms_by_camera.items())
+            },
+            "role_ms_by_camera_role": {
+                role_key: summarize_ms(values) for role_key, values in sorted(self.role_ms_by_camera_role.items())
+            },
+        }
+
+
 class MockSegmenter:
     def __init__(self, mock_text_mask: str = "center") -> None:
         self.mock_text_mask = mock_text_mask
@@ -412,6 +471,27 @@ def build_segmenter(config: dict[str, Any], mock: bool, mock_text_mask: str):
     )
 
 
+class ThreadLocalSegmenterPool:
+    """Keep one segmenter per worker thread so SAM3 processor state is not shared."""
+
+    def __init__(self, config: dict[str, Any], mock: bool, mock_text_mask: str) -> None:
+        self.config = config
+        self.mock = mock
+        self.mock_text_mask = mock_text_mask
+        self.local = threading.local()
+
+    def get(self) -> Any:
+        segmenter = getattr(self.local, "segmenter", None)
+        if segmenter is None:
+            segmenter = build_segmenter(self.config, mock=self.mock, mock_text_mask=self.mock_text_mask)
+            self.local.segmenter = segmenter
+        return segmenter
+
+
+def segment_role_from_pool(segmenter_pool: ThreadLocalSegmenterPool, image: np.ndarray, role: dict[str, Any]) -> RoleResult:
+    return segmenter_pool.get().segment_role(image, role)
+
+
 def process_camera(
     image: np.ndarray,
     camera_alias: str,
@@ -421,7 +501,11 @@ def process_camera(
     out_dir: Path,
     frame_stem: str,
     save_role_masks: bool,
+    role_workers: int = 1,
+    role_executor: ThreadPoolExecutor | None = None,
+    segmenter_pool: ThreadLocalSegmenterPool | None = None,
 ) -> dict[str, Any]:
+    start = time.perf_counter()
     roles = camera_cfg.get("roles", [])
     keep = np.zeros(image.shape[:2], dtype=bool)
     role_logs: list[dict[str, Any]] = []
@@ -429,8 +513,18 @@ def process_camera(
     if save_role_masks:
         role_dir.mkdir(parents=True, exist_ok=True)
 
-    for role in roles:
-        result = segmenter.segment_role(image, role)
+    if role_workers > 1:
+        if role_executor is None or segmenter_pool is None:
+            raise ValueError("role_workers > 1 requires role_executor and segmenter_pool")
+        futures = {role_executor.submit(segment_role_from_pool, segmenter_pool, image, role): idx for idx, role in enumerate(roles)}
+        role_results: list[RoleResult | None] = [None] * len(roles)
+        for future in as_completed(futures):
+            role_results[futures[future]] = future.result()
+        results = [result for result in role_results if result is not None]
+    else:
+        results = [segmenter.segment_role(image, role) for role in roles]
+
+    for role, result in zip(roles, results, strict=False):
         role_mask = result.mask
         keep |= role_mask
         if save_role_masks:
@@ -462,6 +556,7 @@ def process_camera(
 
     return {
         "camera": camera_alias,
+        "elapsed_ms": round((time.perf_counter() - start) * 1000, 3),
         "keep_coverage": float(keep.mean()),
         "roles": role_logs,
         "outputs": {
@@ -471,6 +566,120 @@ def process_camera(
             "config_boxes": f"{frame_stem}_{camera_alias}_config_boxes.png",
         },
     }
+
+
+def process_camera_from_pool(
+    segmenter_pool: ThreadLocalSegmenterPool,
+    image: np.ndarray,
+    camera_alias: str,
+    camera_cfg: dict[str, Any],
+    sam_cfg: dict[str, Any],
+    out_dir: Path,
+    frame_stem: str,
+    save_role_masks: bool,
+    role_workers: int = 1,
+    role_executor: ThreadPoolExecutor | None = None,
+) -> dict[str, Any]:
+    return process_camera(
+        image=image,
+        camera_alias=camera_alias,
+        camera_cfg=camera_cfg,
+        segmenter=segmenter_pool.get() if role_workers == 1 else None,
+        sam_cfg=sam_cfg,
+        out_dir=out_dir,
+        frame_stem=frame_stem,
+        save_role_masks=save_role_masks,
+        role_workers=role_workers,
+        role_executor=role_executor,
+        segmenter_pool=segmenter_pool,
+    )
+
+
+def get_dataset_fps(dataset: Any) -> float | None:
+    fps = getattr(getattr(dataset, "meta", None), "fps", None)
+    if fps is None:
+        return None
+    try:
+        fps_f = float(fps)
+    except (TypeError, ValueError):
+        return None
+    return fps_f if fps_f > 0 else None
+
+
+def write_mp4_from_images(image_paths: list[Path], output_path: Path, fps: float, codec: str = "mp4v") -> dict[str, Any]:
+    import cv2  # type: ignore
+
+    if not image_paths:
+        return {"path": str(output_path), "frames": 0, "skipped": True}
+
+    first = np.asarray(Image.open(image_paths[0]).convert("RGB"))
+    height, width = first.shape[:2]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fourcc = cv2.VideoWriter_fourcc(*codec)
+    writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+    if not writer.isOpened():
+        raise RuntimeError(f"Could not open VideoWriter for {output_path}")
+    try:
+        for image_path in image_paths:
+            frame = np.asarray(Image.open(image_path).convert("RGB"))
+            if frame.shape[:2] != (height, width):
+                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+            writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    finally:
+        writer.release()
+    return {"path": str(output_path), "frames": len(image_paths), "fps": fps, "codec": codec}
+
+
+def write_output_videos(
+    out_dir: Path,
+    camera_aliases: list[str],
+    video_kinds: list[str],
+    fps: float,
+    codec: str,
+) -> list[dict[str, Any]]:
+    video_outputs: list[dict[str, Any]] = []
+    videos_dir = out_dir / "videos"
+    for camera_alias in camera_aliases:
+        for kind in video_kinds:
+            image_paths = sorted(out_dir.glob(f"ep*_frame*_{camera_alias}_{kind}.png"))
+            if not image_paths:
+                continue
+            output_path = videos_dir / f"{camera_alias}_{kind}.mp4"
+            try:
+                result = write_mp4_from_images(image_paths, output_path, fps=fps, codec=codec)
+            except Exception as exc:
+                result = {
+                    "path": str(output_path),
+                    "camera": camera_alias,
+                    "kind": kind,
+                    "error": repr(exc),
+                }
+            else:
+                result["camera"] = camera_alias
+                result["kind"] = kind
+            video_outputs.append(result)
+    return video_outputs
+
+
+def print_completion_summary(summary: dict[str, Any]) -> None:
+    timing = summary.get("timing", {})
+    frame_avg = (timing.get("frame_wall_ms") or {}).get("avg_ms")
+    camera_avg = (timing.get("camera_wall_ms") or {}).get("avg_ms")
+    print(
+        "timing summary: "
+        f"camera_workers={summary.get('camera_workers')} "
+        f"role_workers={summary.get('role_workers')} "
+        f"avg_frame_wall_ms={frame_avg} "
+        f"avg_camera_image_ms={camera_avg}"
+    )
+    videos = summary.get("videos", [])
+    if videos:
+        print("videos written:")
+        for video in videos:
+            if "error" in video:
+                print(f"  ERROR {video.get('camera')} {video.get('kind')}: {video.get('error')}")
+            else:
+                print(f"  {video.get('path')} ({video.get('frames')} frames @ {video.get('fps')} fps)")
 
 
 def run(args: argparse.Namespace) -> None:
@@ -485,6 +694,8 @@ def run(args: argparse.Namespace) -> None:
     episodes = parse_episodes(args.episodes) if args.episodes is not None else ds_cfg.get("episodes")
     if episodes is not None:
         episodes = [int(e) for e in episodes]
+    if args.frame_stride <= 0:
+        raise ValueError(f"--frame-stride must be positive, got {args.frame_stride}")
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -497,9 +708,27 @@ def run(args: argparse.Namespace) -> None:
         download_videos=not args.no_download_videos,
     )
     camera_keys = ds_cfg.get("camera_keys", {})
-    segmenter = build_segmenter(config, mock=args.mock, mock_text_mask=args.mock_text_mask)
+    camera_workers = max(1, int(args.camera_workers))
+    role_workers = max(1, int(args.role_workers))
+    use_segmenter_pool = camera_workers > 1 or role_workers > 1
+    segmenter = build_segmenter(config, mock=args.mock, mock_text_mask=args.mock_text_mask) if not use_segmenter_pool else None
+    segmenter_pool = ThreadLocalSegmenterPool(config, mock=args.mock, mock_text_mask=args.mock_text_mask) if use_segmenter_pool else None
+    executor = ThreadPoolExecutor(max_workers=camera_workers) if camera_workers > 1 else None
+    role_executor = ThreadPoolExecutor(max_workers=camera_workers * role_workers) if role_workers > 1 else None
+    if camera_workers > 1:
+        print(
+            f"camera_workers={camera_workers}: processing cameras in parallel; "
+            "each active worker loads its own SAM3 model."
+        )
+    if role_workers > 1:
+        print(
+            f"role_workers={role_workers}: processing roles in parallel; "
+            f"up to {camera_workers * role_workers} SAM3 models may be loaded."
+        )
 
     manifest_path = out_dir / "manifest.jsonl"
+    dataset_fps = get_dataset_fps(dataset)
+    video_fps = float(args.video_fps) if args.video_fps is not None else (dataset_fps or 15.0) / max(1, int(args.frame_stride))
     summary = {
         "repo_id": repo_id,
         "root": str(root) if root else None,
@@ -508,63 +737,142 @@ def run(args: argparse.Namespace) -> None:
         "mock": args.mock,
         "frames_processed": 0,
         "camera_keys": camera_keys,
+        "camera_workers": camera_workers,
+        "role_workers": role_workers,
+        "dataset_fps": dataset_fps,
+        "video_fps": video_fps,
     }
 
     per_episode_counts: dict[int, int] = {}
-    with manifest_path.open("w", encoding="utf-8") as manifest:
-        for rel_idx in range(len(dataset)):
-            item = dataset[rel_idx]
-            ep_idx = scalar_to_int(item.get("episode_index", 0))
-            if episodes is not None and ep_idx not in episodes:
-                continue
-            count = per_episode_counts.get(ep_idx, 0)
-            if args.max_frames_per_episode is not None and count >= args.max_frames_per_episode:
-                continue
-            if count % args.frame_stride != 0:
+    timings = TimingAccumulator()
+    try:
+        with manifest_path.open("w", encoding="utf-8") as manifest:
+            for rel_idx in range(len(dataset)):
+                item = dataset[rel_idx]
+                ep_idx = scalar_to_int(item.get("episode_index", 0))
+                if episodes is not None and ep_idx not in episodes:
+                    continue
+                count = per_episode_counts.get(ep_idx, 0)
+                if args.max_frames_per_episode is not None and count >= args.max_frames_per_episode:
+                    continue
+                if count % args.frame_stride != 0:
+                    per_episode_counts[ep_idx] = count + 1
+                    continue
                 per_episode_counts[ep_idx] = count + 1
-                continue
-            per_episode_counts[ep_idx] = count + 1
 
-            frame_idx = scalar_to_int(item.get("frame_index", item.get("index", rel_idx)))
-            frame_stem = f"ep{ep_idx:06d}_frame{frame_idx:06d}"
-            frame_log = {
-                "relative_index": rel_idx,
-                "episode_index": ep_idx,
-                "frame_index": frame_idx,
-                "task": str(item.get("task", "")),
-                "cameras": [],
-            }
+                frame_idx = scalar_to_int(item.get("frame_index", item.get("index", rel_idx)))
+                frame_stem = f"ep{ep_idx:06d}_frame{frame_idx:06d}"
+                frame_log = {
+                    "relative_index": rel_idx,
+                    "episode_index": ep_idx,
+                    "frame_index": frame_idx,
+                    "task": str(item.get("task", "")),
+                    "cameras": [],
+                }
 
-            for camera_alias, camera_cfg in config.get("cameras", {}).items():
-                dataset_key = camera_keys.get(camera_alias, camera_cfg.get("dataset_key"))
-                if not dataset_key:
-                    frame_log["cameras"].append({"camera": camera_alias, "error": "missing dataset_key"})
-                    continue
-                if dataset_key not in item:
-                    frame_log["cameras"].append(
-                        {"camera": camera_alias, "dataset_key": dataset_key, "error": "key not present in dataset item"}
-                    )
-                    continue
-                image = tensor_or_array_to_uint8_hwc(item[dataset_key])
-                cam_log = process_camera(
-                    image=image,
-                    camera_alias=camera_alias,
-                    camera_cfg=camera_cfg,
-                    segmenter=segmenter,
-                    sam_cfg=config.get("sam3", {}),
-                    out_dir=out_dir,
-                    frame_stem=frame_stem,
-                    save_role_masks=args.save_role_masks,
-                )
-                cam_log["dataset_key"] = dataset_key
-                frame_log["cameras"].append(cam_log)
+                frame_start = time.perf_counter()
+                camera_entries: list[dict[str, Any] | None] = []
+                camera_jobs: list[tuple[int, str, dict[str, Any], str, np.ndarray]] = []
+                for camera_alias, camera_cfg in config.get("cameras", {}).items():
+                    dataset_key = camera_keys.get(camera_alias, camera_cfg.get("dataset_key"))
+                    if not dataset_key:
+                        camera_entries.append({"camera": camera_alias, "error": "missing dataset_key"})
+                        continue
+                    if dataset_key not in item:
+                        camera_entries.append(
+                            {"camera": camera_alias, "dataset_key": dataset_key, "error": "key not present in dataset item"}
+                        )
+                        continue
+                    image = tensor_or_array_to_uint8_hwc(item[dataset_key])
+                    camera_entries.append(None)
+                    camera_jobs.append((len(camera_entries) - 1, camera_alias, camera_cfg, dataset_key, image))
 
-            manifest.write(json.dumps(frame_log, ensure_ascii=False) + "\n")
-            summary["frames_processed"] += 1
-            if args.max_total_frames is not None and summary["frames_processed"] >= args.max_total_frames:
-                break
+                if camera_workers == 1:
+                    if role_workers == 1:
+                        assert segmenter is not None
+                    else:
+                        assert segmenter_pool is not None
+                        assert role_executor is not None
+                    for job_idx, camera_alias, camera_cfg, dataset_key, image in camera_jobs:
+                        cam_log = process_camera(
+                            image=image,
+                            camera_alias=camera_alias,
+                            camera_cfg=camera_cfg,
+                            segmenter=segmenter,
+                            sam_cfg=config.get("sam3", {}),
+                            out_dir=out_dir,
+                            frame_stem=frame_stem,
+                            save_role_masks=args.save_role_masks,
+                            role_workers=role_workers,
+                            role_executor=role_executor,
+                            segmenter_pool=segmenter_pool,
+                        )
+                        cam_log["dataset_key"] = dataset_key
+                        camera_entries[job_idx] = cam_log
+                else:
+                    assert executor is not None
+                    assert segmenter_pool is not None
+                    futures = {}
+                    for job_idx, camera_alias, camera_cfg, dataset_key, image in camera_jobs:
+                        future = executor.submit(
+                            process_camera_from_pool,
+                            segmenter_pool,
+                            image,
+                            camera_alias,
+                            camera_cfg,
+                            config.get("sam3", {}),
+                            out_dir,
+                            frame_stem,
+                            args.save_role_masks,
+                            role_workers,
+                            role_executor,
+                        )
+                        futures[future] = (job_idx, camera_alias, dataset_key)
+                    for future in as_completed(futures):
+                        job_idx, camera_alias, dataset_key = futures[future]
+                        try:
+                            cam_log = future.result()
+                            cam_log["dataset_key"] = dataset_key
+                        except Exception as exc:
+                            cam_log = {
+                                "camera": camera_alias,
+                                "dataset_key": dataset_key,
+                                "error": repr(exc),
+                            }
+                        camera_entries[job_idx] = cam_log
 
+                frame_log["cameras"] = [entry for entry in camera_entries if entry is not None]
+                frame_elapsed_ms = (time.perf_counter() - frame_start) * 1000
+                frame_log["elapsed_ms"] = round(frame_elapsed_ms, 3)
+                timings.add_frame(frame_elapsed_ms)
+                for cam_log in frame_log["cameras"]:
+                    timings.add_camera_log(cam_log)
+
+                manifest.write(json.dumps(frame_log, ensure_ascii=False) + "\n")
+                summary["frames_processed"] += 1
+                if args.max_total_frames is not None and summary["frames_processed"] >= args.max_total_frames:
+                    break
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
+        if role_executor is not None:
+            role_executor.shutdown(wait=True)
+
+    video_kinds = parse_csv(args.video_kinds)
+    video_outputs: list[dict[str, Any]] = []
+    if args.write_videos and video_kinds:
+        video_outputs = write_output_videos(
+            out_dir=out_dir,
+            camera_aliases=list(config.get("cameras", {}).keys()),
+            video_kinds=video_kinds,
+            fps=video_fps,
+            codec=str(args.video_codec),
+        )
+
+    summary["timing"] = timings.to_summary(camera_workers=camera_workers, role_workers=role_workers)
+    summary["videos"] = video_outputs
     (out_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    print_completion_summary(summary)
     print(json.dumps({"output_dir": str(out_dir), "summary": summary, "manifest": str(manifest_path)}, ensure_ascii=False, indent=2))
 
 
@@ -588,6 +896,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Global frame limit. Use 'all' or 0 for no global limit.",
     )
     parser.add_argument("--frame-stride", type=int, default=15, help="Process every Nth frame within each selected episode")
+    parser.add_argument(
+        "--camera-workers",
+        type=int,
+        default=1,
+        help="Number of cameras to process in parallel. Values >1 load one SAM3 model per active worker.",
+    )
+    parser.add_argument(
+        "--role-workers",
+        type=int,
+        default=1,
+        help="Number of roles to process in parallel per frame. This can multiply SAM3 model VRAM use.",
+    )
     parser.add_argument("--no-download-videos", action="store_true", help="Do not download missing dataset videos")
     parser.add_argument("--mock", action="store_true", help="Use BBOX/dummy masks instead of importing/running SAM3")
     parser.add_argument(
@@ -597,6 +917,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Mock behavior for text-only roles without boxes",
     )
     parser.add_argument("--save-role-masks", action="store_true", help="Save individual role masks in addition to union masks")
+    parser.add_argument(
+        "--write-videos",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write mp4 videos from saved per-camera image outputs.",
+    )
+    parser.add_argument(
+        "--video-kinds",
+        default="overlay,filtered",
+        help="Comma-separated output image kinds to encode as mp4, e.g. overlay,filtered,keep_mask,config_boxes.",
+    )
+    parser.add_argument(
+        "--video-fps",
+        type=float,
+        default=None,
+        help="Output mp4 FPS. Default preserves dataset time after frame-stride: dataset_fps / frame_stride.",
+    )
+    parser.add_argument("--video-codec", default="mp4v", help="OpenCV fourcc codec for mp4 output")
     return parser
 
 

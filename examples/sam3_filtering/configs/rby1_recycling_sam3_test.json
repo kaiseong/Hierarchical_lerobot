@@ -13,7 +13,7 @@
     }
   },
   "sam3": {
-    "confidence_threshold": 0.5,
+    "confidence_threshold": 0.3,
     "device": "cuda",
     "dtype": "bfloat16",
     "mask_dilation_px": 12,
@@ -82,23 +82,11 @@
         {
           "name": "robot_arm_gripper",
           "prompts": [
-            "robot arm",
-            "robot gripper"
+            "blue holder",
+            "blue robot gripper",
+            "robot"
           ],
-          "optional": true,
-          "boxes": [
-            {
-              "label": true,
-              "format": "normalized_xyxy",
-              "value": [
-                0.1,
-                0.0,
-                0.9,
-                0.95
-              ],
-              "note": "Broad front workspace prior. Replace with dynamic bbox when camera calibration/FK is ready."
-            }
-          ],
+          "optional": false,
           "max_instances": 5
         }
       ]
