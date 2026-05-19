@@ -8,8 +8,8 @@
     ],
     "camera_keys": {
       "front": "observation.images.front",
-      "left_wrist": "observation.images.left_wrist",
-      "right_wrist": "observation.images.right_wrist"
+      "left_wrist": "observation.images.left",
+      "right_wrist": "observation.images.right"
     }
   },
   "sam3": {
