@@ -499,7 +499,9 @@ def process_camera(
     segmenter: Any,
     sam_cfg: dict[str, Any],
     out_dir: Path,
+    images_dir: Path,
     frame_stem: str,
+    image_kinds: list[str],
     save_role_masks: bool,
     role_workers: int = 1,
     role_executor: ThreadPoolExecutor | None = None,
@@ -509,7 +511,7 @@ def process_camera(
     roles = camera_cfg.get("roles", [])
     keep = np.zeros(image.shape[:2], dtype=bool)
     role_logs: list[dict[str, Any]] = []
-    role_dir = out_dir / "role_masks"
+    role_dir = images_dir / "role_masks"
     if save_role_masks:
         role_dir.mkdir(parents=True, exist_ok=True)
 
@@ -545,26 +547,36 @@ def process_camera(
 
     dilation_px = int(sam_cfg.get("mask_dilation_px", 0))
     keep = dilate_mask(keep, dilation_px)
-    filtered = apply_keep_mask(image, keep, int(sam_cfg.get("background_value", 0)))
-    overlay = make_overlay(image, keep)
-    boxes_preview = draw_config_boxes(image, roles)
+    images_dir.mkdir(parents=True, exist_ok=True)
+    image_kind_set = set(image_kinds)
+    outputs: dict[str, str] = {}
 
-    Image.fromarray(filtered).save(out_dir / f"{frame_stem}_{camera_alias}_filtered.png")
-    Image.fromarray(overlay).save(out_dir / f"{frame_stem}_{camera_alias}_overlay.png")
-    Image.fromarray(keep.astype(np.uint8) * 255).save(out_dir / f"{frame_stem}_{camera_alias}_keep_mask.png")
-    Image.fromarray(boxes_preview).save(out_dir / f"{frame_stem}_{camera_alias}_config_boxes.png")
+    if "filtered" in image_kind_set:
+        filtered = apply_keep_mask(image, keep, int(sam_cfg.get("background_value", 0)))
+        path = images_dir / f"{frame_stem}_{camera_alias}_filtered.png"
+        Image.fromarray(filtered).save(path)
+        outputs["filtered"] = str(path.relative_to(out_dir))
+    if "overlay" in image_kind_set:
+        overlay = make_overlay(image, keep)
+        path = images_dir / f"{frame_stem}_{camera_alias}_overlay.png"
+        Image.fromarray(overlay).save(path)
+        outputs["overlay"] = str(path.relative_to(out_dir))
+    if "keep_mask" in image_kind_set:
+        path = images_dir / f"{frame_stem}_{camera_alias}_keep_mask.png"
+        Image.fromarray(keep.astype(np.uint8) * 255).save(path)
+        outputs["keep_mask"] = str(path.relative_to(out_dir))
+    if "config_boxes" in image_kind_set:
+        boxes_preview = draw_config_boxes(image, roles)
+        path = images_dir / f"{frame_stem}_{camera_alias}_config_boxes.png"
+        Image.fromarray(boxes_preview).save(path)
+        outputs["config_boxes"] = str(path.relative_to(out_dir))
 
     return {
         "camera": camera_alias,
         "elapsed_ms": round((time.perf_counter() - start) * 1000, 3),
         "keep_coverage": float(keep.mean()),
         "roles": role_logs,
-        "outputs": {
-            "filtered": f"{frame_stem}_{camera_alias}_filtered.png",
-            "overlay": f"{frame_stem}_{camera_alias}_overlay.png",
-            "keep_mask": f"{frame_stem}_{camera_alias}_keep_mask.png",
-            "config_boxes": f"{frame_stem}_{camera_alias}_config_boxes.png",
-        },
+        "outputs": outputs,
     }
 
 
@@ -575,7 +587,9 @@ def process_camera_from_pool(
     camera_cfg: dict[str, Any],
     sam_cfg: dict[str, Any],
     out_dir: Path,
+    images_dir: Path,
     frame_stem: str,
+    image_kinds: list[str],
     save_role_masks: bool,
     role_workers: int = 1,
     role_executor: ThreadPoolExecutor | None = None,
@@ -587,7 +601,9 @@ def process_camera_from_pool(
         segmenter=segmenter_pool.get() if role_workers == 1 else None,
         sam_cfg=sam_cfg,
         out_dir=out_dir,
+        images_dir=images_dir,
         frame_stem=frame_stem,
+        image_kinds=image_kinds,
         save_role_masks=save_role_masks,
         role_workers=role_workers,
         role_executor=role_executor,
@@ -632,6 +648,7 @@ def write_mp4_from_images(image_paths: list[Path], output_path: Path, fps: float
 
 def write_output_videos(
     out_dir: Path,
+    images_dir: Path,
     camera_aliases: list[str],
     video_kinds: list[str],
     fps: float,
@@ -641,7 +658,7 @@ def write_output_videos(
     videos_dir = out_dir / "videos"
     for camera_alias in camera_aliases:
         for kind in video_kinds:
-            image_paths = sorted(out_dir.glob(f"ep*_frame*_{camera_alias}_{kind}.png"))
+            image_paths = sorted(images_dir.glob(f"ep*_frame*_{camera_alias}_{kind}.png"))
             if not image_paths:
                 continue
             output_path = videos_dir / f"{camera_alias}_{kind}.mp4"
@@ -699,6 +716,8 @@ def run(args: argparse.Namespace) -> None:
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    images_dir = out_dir / "images"
+    image_kinds = parse_csv(args.image_kinds)
 
     dataset = LeRobotDataset(
         repo_id=repo_id,
@@ -739,6 +758,7 @@ def run(args: argparse.Namespace) -> None:
         "camera_keys": camera_keys,
         "camera_workers": camera_workers,
         "role_workers": role_workers,
+        "image_kinds": image_kinds,
         "dataset_fps": dataset_fps,
         "video_fps": video_fps,
     }
@@ -801,7 +821,9 @@ def run(args: argparse.Namespace) -> None:
                             segmenter=segmenter,
                             sam_cfg=config.get("sam3", {}),
                             out_dir=out_dir,
+                            images_dir=images_dir,
                             frame_stem=frame_stem,
+                            image_kinds=image_kinds,
                             save_role_masks=args.save_role_masks,
                             role_workers=role_workers,
                             role_executor=role_executor,
@@ -822,7 +844,9 @@ def run(args: argparse.Namespace) -> None:
                             camera_cfg,
                             config.get("sam3", {}),
                             out_dir,
+                            images_dir,
                             frame_stem,
+                            image_kinds,
                             args.save_role_masks,
                             role_workers,
                             role_executor,
@@ -863,6 +887,7 @@ def run(args: argparse.Namespace) -> None:
     if args.write_videos and video_kinds:
         video_outputs = write_output_videos(
             out_dir=out_dir,
+            images_dir=images_dir,
             camera_aliases=list(config.get("cameras", {}).keys()),
             video_kinds=video_kinds,
             fps=video_fps,
@@ -882,7 +907,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-id", default=None, help="Override config.dataset.repo_id")
     parser.add_argument("--root", default=None, help="Override config.dataset.root for local LeRobot dataset")
     parser.add_argument("--episodes", default=None, help="Comma-separated episode indices, e.g. 0,1,2")
-    parser.add_argument("--output-dir", default="examples/sam3_filtering/outputs/run", help="Directory for filtered/overlay outputs")
+    parser.add_argument("--output-dir", default="examples/sam3_filtering/outputs/run", help="Directory for SAM3 filtering outputs")
     parser.add_argument(
         "--max-frames-per-episode",
         type=parse_optional_frame_limit,
@@ -918,6 +943,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--save-role-masks", action="store_true", help="Save individual role masks in addition to union masks")
     parser.add_argument(
+        "--image-kinds",
+        default="filtered",
+        help="Comma-separated still image kinds to save under output-dir/images. Default saves only masked RGB images. Options: filtered,overlay,keep_mask,config_boxes.",
+    )
+    parser.add_argument(
         "--write-videos",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -925,8 +955,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--video-kinds",
-        default="overlay,filtered",
-        help="Comma-separated output image kinds to encode as mp4, e.g. overlay,filtered,keep_mask,config_boxes.",
+        default="filtered",
+        help="Comma-separated saved image kinds to encode as mp4, e.g. filtered,overlay,keep_mask,config_boxes.",
     )
     parser.add_argument(
         "--video-fps",
