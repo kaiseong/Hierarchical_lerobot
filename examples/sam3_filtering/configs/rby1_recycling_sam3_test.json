@@ -35,7 +35,6 @@
         {
           "name": "pet_object",
           "prompts": [
-            "plastic bottle",
             "bottle"
           ],
           "optional": false,
@@ -82,8 +81,6 @@
         {
           "name": "robot_arm_gripper",
           "prompts": [
-            "blue holder",
-            "blue robot gripper",
             "robot"
           ],
           "optional": false,
@@ -105,7 +102,6 @@
         {
           "name": "pet_object",
           "prompts": [
-            "plastic bottle",
             "bottle"
           ],
           "optional": false,
@@ -130,8 +126,7 @@
         {
           "name": "robot_gripper",
           "prompts": [
-            "blue holder",
-            "blue robot gripper"
+            "blue holder"
           ],
           "optional": false,
           "boxes": [
@@ -165,7 +160,6 @@
         {
           "name": "pet_object",
           "prompts": [
-            "plastic bottle",
             "bottle"
           ],
           "optional": false,
@@ -190,8 +184,7 @@
         {
           "name": "robot_gripper",
           "prompts": [
-            "blue holder",
-            "blue robot gripper"
+            "blue holder"
           ],
           "optional": false,
           "boxes": [
