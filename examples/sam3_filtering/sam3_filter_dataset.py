@@ -34,6 +34,7 @@ class RoleResult:
     scores: list[float]
     boxes_xyxy: list[list[float]]
     prompts: list[str]
+    confidence_threshold: float
     elapsed_ms: float
     missing: bool = False
     error: str | None = None
@@ -66,6 +67,24 @@ def parse_csv(value: str | None) -> list[str]:
     if value is None or value.strip() == "":
         return []
     return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def role_confidence_threshold(role: dict[str, Any], default_threshold: float) -> float:
+    if "confidence_threshold" in role:
+        return float(role["confidence_threshold"])
+    if "threshold" in role:
+        return float(role["threshold"])
+    return default_threshold
+
+
+def config_confidence_thresholds(config: dict[str, Any]) -> tuple[float, float]:
+    sam_cfg = config.get("sam3", {})
+    default_threshold = float(sam_cfg.get("confidence_threshold", 0.5))
+    thresholds = [default_threshold]
+    for camera_cfg in config.get("cameras", {}).values():
+        for role in camera_cfg.get("roles", []) or []:
+            thresholds.append(role_confidence_threshold(role, default_threshold))
+    return default_threshold, min(thresholds)
 
 
 def scalar_to_int(value: Any) -> int:
@@ -297,11 +316,13 @@ class TimingAccumulator:
 
 
 class MockSegmenter:
-    def __init__(self, mock_text_mask: str = "center") -> None:
+    def __init__(self, mock_text_mask: str = "center", confidence_threshold: float = 0.5) -> None:
         self.mock_text_mask = mock_text_mask
+        self.confidence_threshold = confidence_threshold
 
     def segment_role(self, image: np.ndarray, role: dict[str, Any]) -> RoleResult:
         start = time.perf_counter()
+        confidence_threshold = role_confidence_threshold(role, self.confidence_threshold)
         h, w = image.shape[:2]
         mask = np.zeros((h, w), dtype=bool)
         boxes = role.get("boxes", []) or []
@@ -327,13 +348,20 @@ class MockSegmenter:
             scores=[1.0] if mask.any() else [],
             boxes_xyxy=[],
             prompts=role.get("prompts", []),
+            confidence_threshold=confidence_threshold,
             elapsed_ms=elapsed,
             missing=not mask.any(),
         )
 
 
 class SAM3ImageSegmenter:
-    def __init__(self, confidence_threshold: float, device: str = "cuda", dtype: str = "bfloat16") -> None:
+    def __init__(
+        self,
+        confidence_threshold: float,
+        processor_confidence_threshold: float | None = None,
+        device: str = "cuda",
+        dtype: str = "bfloat16",
+    ) -> None:
         import torch
         from sam3.model.sam3_image_processor import Sam3Processor
         from sam3.model_builder import build_sam3_image_model
@@ -351,7 +379,10 @@ class SAM3ImageSegmenter:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
         self.model = build_sam3_image_model()
-        self.processor = Sam3Processor(self.model, confidence_threshold=confidence_threshold)
+        self.processor_confidence_threshold = (
+            confidence_threshold if processor_confidence_threshold is None else processor_confidence_threshold
+        )
+        self.processor = Sam3Processor(self.model, confidence_threshold=self.processor_confidence_threshold)
         self.confidence_threshold = confidence_threshold
 
     def _extract_masks(
@@ -359,6 +390,7 @@ class SAM3ImageSegmenter:
         state: dict[str, Any],
         image_shape: tuple[int, int],
         max_instances: int,
+        confidence_threshold: float,
         search_mask: np.ndarray | None = None,
         restrict_to_search_region: bool = False,
     ) -> tuple[np.ndarray, list[float], list[list[float]]]:
@@ -379,7 +411,7 @@ class SAM3ImageSegmenter:
         kept = 0
         for i in order:
             score = float(scores_list[i])
-            if score < self.confidence_threshold:
+            if score < confidence_threshold:
                 continue
             mask_i = masks[i]
             if hasattr(mask_i, "detach"):
@@ -405,6 +437,7 @@ class SAM3ImageSegmenter:
 
     def segment_role(self, image: np.ndarray, role: dict[str, Any]) -> RoleResult:
         start = time.perf_counter()
+        confidence_threshold = role_confidence_threshold(role, self.confidence_threshold)
         h, w = image.shape[:2]
         pil = Image.fromarray(image)
         prompts = role.get("prompts", []) or [None]
@@ -438,6 +471,7 @@ class SAM3ImageSegmenter:
                     state,
                     (h, w),
                     max_instances=max_instances,
+                    confidence_threshold=confidence_threshold,
                     search_mask=search_mask,
                     restrict_to_search_region=restrict_to_search_region,
                 )
@@ -454,6 +488,7 @@ class SAM3ImageSegmenter:
             scores=role_scores,
             boxes_xyxy=role_boxes,
             prompts=[p for p in role.get("prompts", [])],
+            confidence_threshold=confidence_threshold,
             elapsed_ms=elapsed,
             missing=not role_mask.any(),
             error=error,
@@ -461,11 +496,13 @@ class SAM3ImageSegmenter:
 
 
 def build_segmenter(config: dict[str, Any], mock: bool, mock_text_mask: str):
+    default_threshold, processor_threshold = config_confidence_thresholds(config)
     if mock:
-        return MockSegmenter(mock_text_mask=mock_text_mask)
+        return MockSegmenter(mock_text_mask=mock_text_mask, confidence_threshold=default_threshold)
     sam_cfg = config.get("sam3", {})
     return SAM3ImageSegmenter(
-        confidence_threshold=float(sam_cfg.get("confidence_threshold", 0.5)),
+        confidence_threshold=default_threshold,
+        processor_confidence_threshold=processor_threshold,
         device=str(sam_cfg.get("device", "cuda")),
         dtype=str(sam_cfg.get("dtype", "bfloat16")),
     )
@@ -538,6 +575,7 @@ def process_camera(
                 "scores": result.scores,
                 "boxes_xyxy": result.boxes_xyxy,
                 "search_regions": role.get("search_regions", []),
+                "confidence_threshold": result.confidence_threshold,
                 "elapsed_ms": round(result.elapsed_ms, 3),
                 "missing": result.missing,
                 "optional": bool(role.get("optional", False)),
@@ -727,6 +765,7 @@ def run(args: argparse.Namespace) -> None:
         download_videos=not args.no_download_videos,
     )
     camera_keys = ds_cfg.get("camera_keys", {})
+    default_confidence_threshold, processor_confidence_threshold = config_confidence_thresholds(config)
     camera_workers = max(1, int(args.camera_workers))
     role_workers = max(1, int(args.role_workers))
     use_segmenter_pool = camera_workers > 1 or role_workers > 1
@@ -756,6 +795,8 @@ def run(args: argparse.Namespace) -> None:
         "mock": args.mock,
         "frames_processed": 0,
         "camera_keys": camera_keys,
+        "default_confidence_threshold": default_confidence_threshold,
+        "processor_confidence_threshold": processor_confidence_threshold,
         "camera_workers": camera_workers,
         "role_workers": role_workers,
         "image_kinds": image_kinds,

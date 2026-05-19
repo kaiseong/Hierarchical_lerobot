@@ -13,7 +13,7 @@
     }
   },
   "sam3": {
-    "confidence_threshold": 0.3,
+    "confidence_threshold": 0.5,
     "device": "cuda",
     "dtype": "bfloat16",
     "mask_dilation_px": 12,
@@ -83,6 +83,7 @@
           "prompts": [
             "robot"
           ],
+          "confidence_threshold": 0.1,
           "optional": false,
           "max_instances": 5
         }
