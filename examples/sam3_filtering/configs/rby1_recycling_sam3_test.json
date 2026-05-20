@@ -13,10 +13,10 @@
     }
   },
   "sam3": {
-    "confidence_threshold": 0.5,
+    "confidence_threshold": 0.1,
     "device": "cuda",
     "dtype": "bfloat16",
-    "mask_dilation_px": 12,
+    "mask_dilation_px": 2,
     "background_value": 0,
     "max_instances_per_role": 3,
     "fail_on_required_missing": false
@@ -81,6 +81,7 @@
         {
           "name": "robot_arm_gripper",
           "prompts": [
+            "arm",
             "robot"
           ],
           "confidence_threshold": 0.1,
@@ -127,8 +128,10 @@
         {
           "name": "robot_gripper",
           "prompts": [
-            "blue holder"
+            "blue holder",
+            "robot"
           ],
+          "confidence_threshold": 0.1,
           "optional": false,
           "boxes": [
             {
@@ -185,9 +188,11 @@
         {
           "name": "robot_gripper",
           "prompts": [
-            "blue holder"
+            "blue holder",
+            "robot"
           ],
           "optional": false,
+          "confidence_threshold": 0.1,
           "boxes": [
             {
               "label": true,

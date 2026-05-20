@@ -54,3 +54,35 @@ python examples/sam3_filtering/sam3_filter_dataset.py \
 ```
 
 Full test는 15Hz 모든 프레임을 처리하므로 오래 걸리고 output PNG도 많이 생긴다.
+
+
+### Create and upload a SAM3-filtered dataset
+
+`repo_id`의 모든 episode를 읽어서 config의 SAM3 segmentation을 camera observation에 적용하고,
+`new_repo_id`로 새 LeRobot dataset을 업로드한다.
+
+```bash
+python examples/sam3_filtering/create_sam3_segmented_dataset.py \
+  rainbowrobotics/simtos_0412 \
+  <your_hf_user>/simtos_0412_sam3_segmented \
+  --config examples/sam3_filtering/configs/rby1_recycling_sam3_test.json \
+  --overwrite-local
+```
+
+업로드 없이 writer 경로만 확인하려면:
+
+```bash
+python examples/sam3_filtering/create_sam3_segmented_dataset.py \
+  rainbowrobotics/simtos_0412 \
+  <your_hf_user>/simtos_0412_sam3_segmented_smoke \
+  --config examples/sam3_filtering/configs/rby1_recycling_sam3_test.json \
+  --episodes 0 \
+  --max-total-frames 1 \
+  --mock \
+  --no-push \
+  --new-root /tmp/simtos_0412_sam3_smoke \
+  --overwrite-local
+```
+
+기본값은 config 안의 테스트용 `dataset.episodes`를 무시하고 전체 episode를 처리한다.
+일부 episode만 변환하려면 `--episodes 0,1,2`를 명시한다.
