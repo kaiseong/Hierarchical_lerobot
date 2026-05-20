@@ -14,6 +14,7 @@ import json
 import shutil
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from sam3_filter_dataset_v2 import (
     TimingAccumulator,
+    ThreadLocalSegmenterPool,
     apply_keep_mask,
     build_segmenter,
     config_confidence_thresholds,
@@ -143,6 +145,24 @@ def segment_camera_image(
     return filtered, camera_log
 
 
+def segment_camera_image_from_pool(
+    segmenter_pool: ThreadLocalSegmenterPool,
+    image: np.ndarray,
+    camera_alias: str,
+    camera_cfg: dict[str, Any],
+    sam_cfg: dict[str, Any],
+    default_threshold: float,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    return segment_camera_image(
+        image=image,
+        camera_alias=camera_alias,
+        camera_cfg=camera_cfg,
+        segmenter=segmenter_pool.get(),
+        sam_cfg=sam_cfg,
+        default_threshold=default_threshold,
+    )
+
+
 def build_camera_mapping(config: dict[str, Any]) -> dict[str, tuple[str, dict[str, Any]]]:
     ds_cfg = config.get("dataset", {})
     camera_keys = ds_cfg.get("camera_keys", {}) or {}
@@ -253,7 +273,24 @@ def run(args: argparse.Namespace) -> None:
         raise KeyError(f"Configured camera keys are not in the source dataset: {missing_configured_keys}")
 
     default_threshold, processor_threshold = config_confidence_thresholds(config)
-    segmenter = build_segmenter(config, mock=args.mock, mock_text_mask=args.mock_text_mask)
+    camera_workers = max(1, int(args.camera_workers))
+    use_segmenter_pool = camera_workers > 1
+    segmenter = (
+        build_segmenter(config, mock=args.mock, mock_text_mask=args.mock_text_mask)
+        if not use_segmenter_pool
+        else None
+    )
+    segmenter_pool = (
+        ThreadLocalSegmenterPool(config, mock=args.mock, mock_text_mask=args.mock_text_mask)
+        if use_segmenter_pool
+        else None
+    )
+    camera_executor = ThreadPoolExecutor(max_workers=camera_workers) if camera_workers > 1 else None
+    if camera_workers > 1:
+        print(
+            f"camera_workers={camera_workers}: processing cameras in parallel; "
+            "each active worker loads its own SAM3 model."
+        )
     sam_cfg = config.get("sam3", {}) or {}
     default_feature_keys = set(DEFAULT_FEATURES)
     timings = TimingAccumulator()
@@ -308,9 +345,12 @@ def run(args: argparse.Namespace) -> None:
                 }
                 frame_start = time.perf_counter()
 
+                camera_results: list[tuple[str, np.ndarray, dict[str, Any]] | None] = []
+                camera_jobs: list[tuple[int, str, str, dict[str, Any], np.ndarray]] = []
                 for dataset_key, (camera_alias, camera_cfg) in camera_mapping.items():
                     if dataset_key not in item:
                         if args.allow_missing_cameras:
+                            camera_results.append(None)
                             frame_log["cameras"].append(
                                 {
                                     "camera": camera_alias,
@@ -321,14 +361,47 @@ def run(args: argparse.Namespace) -> None:
                             continue
                         raise KeyError(f"Dataset item is missing configured camera key '{dataset_key}'.")
                     image = tensor_or_array_to_uint8_hwc(item[dataset_key])
-                    filtered, camera_log = segment_camera_image(
-                        image=image,
-                        camera_alias=camera_alias,
-                        camera_cfg=camera_cfg,
-                        segmenter=segmenter,
-                        sam_cfg=sam_cfg,
-                        default_threshold=default_threshold,
+                    camera_results.append(None)
+                    camera_jobs.append(
+                        (len(camera_results) - 1, dataset_key, camera_alias, camera_cfg, image)
                     )
+
+                if camera_workers == 1:
+                    assert segmenter is not None
+                    for result_idx, dataset_key, camera_alias, camera_cfg, image in camera_jobs:
+                        filtered, camera_log = segment_camera_image(
+                            image=image,
+                            camera_alias=camera_alias,
+                            camera_cfg=camera_cfg,
+                            segmenter=segmenter,
+                            sam_cfg=sam_cfg,
+                            default_threshold=default_threshold,
+                        )
+                        camera_results[result_idx] = (dataset_key, filtered, camera_log)
+                else:
+                    assert camera_executor is not None
+                    assert segmenter_pool is not None
+                    futures = {}
+                    for result_idx, dataset_key, camera_alias, camera_cfg, image in camera_jobs:
+                        future = camera_executor.submit(
+                            segment_camera_image_from_pool,
+                            segmenter_pool,
+                            image,
+                            camera_alias,
+                            camera_cfg,
+                            sam_cfg,
+                            default_threshold,
+                        )
+                        futures[future] = (result_idx, dataset_key)
+                    for future in as_completed(futures):
+                        result_idx, dataset_key = futures[future]
+                        filtered, camera_log = future.result()
+                        camera_results[result_idx] = (dataset_key, filtered, camera_log)
+
+                for result in camera_results:
+                    if result is None:
+                        continue
+                    dataset_key, filtered, camera_log = result
                     filtered_images[dataset_key] = filtered
                     camera_log["dataset_key"] = dataset_key
                     frame_log["cameras"].append(camera_log)
@@ -360,6 +433,8 @@ def run(args: argparse.Namespace) -> None:
 
         save_current_episode()
     finally:
+        if camera_executor is not None:
+            camera_executor.shutdown(wait=True)
         output_dataset.finalize()
 
     if frames_written == 0:
@@ -382,13 +457,14 @@ def run(args: argparse.Namespace) -> None:
         "max_frames_per_episode": args.max_frames_per_episode,
         "max_total_frames": args.max_total_frames,
         "mock": args.mock,
+        "camera_workers": camera_workers,
         "frames_written": frames_written,
         "episodes_written": output_episodes,
         "camera_mapping": {key: alias for key, (alias, _) in camera_mapping.items()},
         "default_confidence_threshold": default_threshold,
         "processor_confidence_threshold": processor_threshold,
         "sam3": sam_cfg,
-        "timing": timings.to_summary(camera_workers=1, role_workers=1),
+        "timing": timings.to_summary(camera_workers=camera_workers, role_workers=1),
         "manifest": str(manifest_path),
         "config_snapshot": str(config_snapshot),
         "elapsed_s": round(time.perf_counter() - start_time, 3),
@@ -490,6 +566,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="center",
         choices=["center", "none"],
         help="Mock text-only mask mode.",
+    )
+    parser.add_argument(
+        "--camera-workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of cameras to segment in parallel per frame. "
+            "Values >1 load one SAM3 model per active worker."
+        ),
     )
     parser.add_argument(
         "--image-writer-processes",

@@ -66,6 +66,7 @@ python examples/sam3_filtering/create_sam3_segmented_dataset.py \
   rainbowrobotics/simtos_0412 \
   <your_hf_user>/simtos_0412_sam3_segmented \
   --config examples/sam3_filtering/configs/rby1_recycling_sam3_test.json \
+  --camera-workers 3 \
   --overwrite-local
 ```
 
@@ -86,3 +87,5 @@ python examples/sam3_filtering/create_sam3_segmented_dataset.py \
 
 기본값은 config 안의 테스트용 `dataset.episodes`를 무시하고 전체 episode를 처리한다.
 일부 episode만 변환하려면 `--episodes 0,1,2`를 명시한다.
+VRAM 여유가 있으면 `--camera-workers 2` 또는 `--camera-workers 3`을 쓸 수 있다.
+각 camera worker는 SAM3 모델을 하나씩 로드하고, LeRobot dataset write/save는 단일 스레드로 유지된다.
