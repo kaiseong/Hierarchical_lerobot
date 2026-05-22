@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from PIL import Image
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
@@ -213,6 +214,40 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def resolve_optional_output_dir(output_root: Path, value: str | None) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value)
+    return path if path.is_absolute() else output_root / path
+
+
+def save_comparison_images(
+    comparison_dir: Path,
+    source_episode_index: int,
+    source_frame_index: int,
+    camera_alias: str,
+    original: np.ndarray,
+    filtered: np.ndarray,
+) -> dict[str, str]:
+    camera_dir = comparison_dir / camera_alias
+    camera_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"ep{source_episode_index:06d}_frame{source_frame_index:06d}"
+    original_path = camera_dir / f"{stem}_original.png"
+    filtered_path = camera_dir / f"{stem}_sam3.png"
+    side_by_side_path = camera_dir / f"{stem}_original_vs_sam3.png"
+
+    Image.fromarray(original).save(original_path, compress_level=1)
+    Image.fromarray(filtered).save(filtered_path, compress_level=1)
+    side_by_side = np.concatenate([original, filtered], axis=1)
+    Image.fromarray(side_by_side).save(side_by_side_path, compress_level=1)
+
+    return {
+        "original": str(original_path),
+        "sam3": str(filtered_path),
+        "side_by_side": str(side_by_side_path),
+    }
+
+
 def run(args: argparse.Namespace) -> None:
     from lerobot.datasets import LeRobotDataset
     from lerobot.utils.constants import DEFAULT_FEATURES, HF_LEROBOT_HOME
@@ -294,9 +329,15 @@ def run(args: argparse.Namespace) -> None:
     sam_cfg = config.get("sam3", {}) or {}
     default_feature_keys = set(DEFAULT_FEATURES)
     timings = TimingAccumulator()
+    comparison_dir = (
+        resolve_optional_output_dir(output_root, args.comparison_dir)
+        if args.save_comparison_images
+        else None
+    )
 
     manifest_path = output_root / "sam3_segmentation_manifest.jsonl"
     frames_written = 0
+    comparison_frames_saved = 0
     source_frames_seen_by_episode: dict[int, int] = {}
     output_episodes = 0
     current_source_episode: int | None = None
@@ -334,6 +375,7 @@ def run(args: argparse.Namespace) -> None:
 
                 frame_idx = scalar_to_int(item.get("frame_index", item.get("index", rel_idx)))
                 filtered_images: dict[str, np.ndarray] = {}
+                original_images: dict[str, np.ndarray] = {}
                 frame_log = {
                     "source_relative_index": rel_idx,
                     "source_episode_index": ep_idx,
@@ -361,6 +403,7 @@ def run(args: argparse.Namespace) -> None:
                             continue
                         raise KeyError(f"Dataset item is missing configured camera key '{dataset_key}'.")
                     image = tensor_or_array_to_uint8_hwc(item[dataset_key])
+                    original_images[dataset_key] = image
                     camera_results.append(None)
                     camera_jobs.append(
                         (len(camera_results) - 1, dataset_key, camera_alias, camera_cfg, image)
@@ -404,6 +447,21 @@ def run(args: argparse.Namespace) -> None:
                     dataset_key, filtered, camera_log = result
                     filtered_images[dataset_key] = filtered
                     camera_log["dataset_key"] = dataset_key
+                    if (
+                        comparison_dir is not None
+                        and (
+                            args.comparison_max_frames is None
+                            or comparison_frames_saved < args.comparison_max_frames
+                        )
+                    ):
+                        camera_log["comparison_outputs"] = save_comparison_images(
+                            comparison_dir=comparison_dir,
+                            source_episode_index=ep_idx,
+                            source_frame_index=frame_idx,
+                            camera_alias=str(camera_log["camera"]),
+                            original=original_images[dataset_key],
+                            filtered=filtered,
+                        )
                     frame_log["cameras"].append(camera_log)
                     timings.add_camera_log(camera_log)
 
@@ -416,6 +474,14 @@ def run(args: argparse.Namespace) -> None:
                 output_dataset.add_frame(writer_frame)
                 current_episode_has_frames = True
                 frames_written += 1
+                if (
+                    comparison_dir is not None
+                    and (
+                        args.comparison_max_frames is None
+                        or comparison_frames_saved < args.comparison_max_frames
+                    )
+                ):
+                    comparison_frames_saved += 1
 
                 frame_elapsed_ms = (time.perf_counter() - frame_start) * 1000
                 timings.add_frame(frame_elapsed_ms)
@@ -458,6 +524,12 @@ def run(args: argparse.Namespace) -> None:
         "max_total_frames": args.max_total_frames,
         "mock": args.mock,
         "camera_workers": camera_workers,
+        "comparison_images": {
+            "enabled": comparison_dir is not None,
+            "dir": str(comparison_dir) if comparison_dir is not None else None,
+            "frames_saved": comparison_frames_saved,
+            "max_frames": args.comparison_max_frames,
+        },
         "frames_written": frames_written,
         "episodes_written": output_episodes,
         "camera_mapping": {key: alias for key, (alias, _) in camera_mapping.items()},
@@ -575,6 +647,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Number of cameras to segment in parallel per frame. "
             "Values >1 load one SAM3 model per active worker."
         ),
+    )
+    parser.add_argument(
+        "--save-comparison-images",
+        action="store_true",
+        help="Save original, SAM3-filtered, and side-by-side PNGs for visual comparison.",
+    )
+    parser.add_argument(
+        "--comparison-dir",
+        default="sam3_comparison_images",
+        help="Comparison image output dir. Relative paths are resolved under the local output dataset root.",
+    )
+    parser.add_argument(
+        "--comparison-max-frames",
+        type=parse_optional_frame_limit,
+        default=None,
+        help="Maximum written frames to save comparison PNGs for. Default saves every written frame.",
     )
     parser.add_argument(
         "--image-writer-processes",
