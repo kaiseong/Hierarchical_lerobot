@@ -82,6 +82,8 @@ python examples/sam3_filtering/create_sam3_segmented_dataset.py \
   --mock \
   --no-push \
   --new-root /tmp/simtos_0412_sam3_smoke \
+  --save-comparison-images \
+  --comparison-max-frames 1 \
   --overwrite-local
 ```
 
@@ -89,3 +91,6 @@ python examples/sam3_filtering/create_sam3_segmented_dataset.py \
 일부 episode만 변환하려면 `--episodes 0,1,2`를 명시한다.
 VRAM 여유가 있으면 `--camera-workers 2` 또는 `--camera-workers 3`을 쓸 수 있다.
 각 camera worker는 SAM3 모델을 하나씩 로드하고, LeRobot dataset write/save는 단일 스레드로 유지된다.
+비교용 PNG가 필요하면 `--save-comparison-images`를 추가한다. 기본 저장 위치는
+새 dataset root 아래 `sam3_comparison_images/`이며, 각 카메라별로 original, SAM3 결과,
+side-by-side 이미지가 저장된다.
